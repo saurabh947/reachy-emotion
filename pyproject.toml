@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reachy-emotion"
+version = "0.1.0"
+description = "Reachy Mini app: emotion detection + robot response via ActionCommand"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "emotion-detection-action",
+    "reachy-mini",
+    "opencv-python>=4.8.0",
+    "gtts>=2.4.0",
+    "pydub>=0.25.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
