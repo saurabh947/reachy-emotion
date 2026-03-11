@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reachy Emotion</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="topline">
+      <div class="brand">
+        <span class="logo">🤖</span>
+        <span class="brand-name">Reachy Mini</span>
+      </div>
+      <span class="pill">Emotion · Conversation · Gemini</span>
+    </div>
+
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">Multimodal · Expressive · Real-time</p>
+        <h1>Reachy Emotion</h1>
+        <p class="lede">
+          Two apps in one: a continuous emotion-detection loop that plays
+          matching robot animations, and a Gemini-powered voice conversation
+          where emotion detection is a live tool call.
+        </p>
+        <div class="hero-actions">
+          <a class="btn primary" href="https://github.com/pollen-robotics/reachy_mini">
+            ↗ Reachy Mini SDK
+          </a>
+          <a class="btn ghost" href="https://huggingface.co/docs/reachy_mini/SDK/integration">
+            App Docs
+          </a>
+        </div>
+        <div class="hero-badges">
+          <span>👁 Camera emotion detection</span>
+          <span>🎙 Microphone audio fusion</span>
+          <span>🔊 Spoken announcements</span>
+          <span>🎭 Recorded emotion moves</span>
+          <span>🤖 Gemini conversation</span>
+          <span>🗣 Voice input (STT)</span>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="glass-card">
+          <p class="caption">
+            <strong>Emotion loop:</strong> Detects emotions in real-time using Reachy's camera
+            and microphone, plays matching pre-recorded animations, and announces
+            the emotion through the speaker.
+          </p>
+          <br/>
+          <p class="caption">
+            <strong>Gemini conversation:</strong> Talk to Reachy via voice. Gemini maintains
+            the conversation history and calls the local emotion SDK as a tool
+            when it wants to know how you're feeling.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <div class="section">
+    <div class="section-header">
+      <h2>What's inside</h2>
+      <p class="intro">A multimodal emotion-response layer for your Reachy Mini.</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="icon">👁</div>
+        <h3>Visual detection</h3>
+        <p>Processes frames from Reachy's built-in camera to detect faces and read facial expressions.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🎙</div>
+        <h3>Audio fusion</h3>
+        <p>Captures audio from the robot's microphone array and fuses it with visual cues for richer emotion detection.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🎭</div>
+        <h3>Expressive reactions</h3>
+        <p>Plays pre-recorded emotion animations from the Reachy Mini emotions library in response to what it detects.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🔊</div>
+        <h3>Spoken announcements</h3>
+        <p>Uses text-to-speech (gTTS) to announce the detected emotion through the robot's speaker.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">👀</div>
+        <h3>Face gaze tracking</h3>
+        <p>Reachy's head automatically follows the detected face, making the interaction feel natural and attentive.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">⚡</div>
+        <h3>ActionCommand pipeline</h3>
+        <p>Bridges the emotion detection SDK and Reachy Mini SDK via a clean ActionCommand interface.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🤖</div>
+        <h3>Gemini conversation</h3>
+        <p>Talk to Reachy via voice. Gemini maintains the full conversation history and decides when to call detect_emotion as a tool.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🗣</div>
+        <h3>Voice input (STT)</h3>
+        <p>Records speech from Reachy's mic with energy-based VAD, transcribes via Google Speech Recognition, and feeds text to Gemini.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- How it works -->
+  <div class="section story">
+    <div class="section-header">
+      <h2>How it works</h2>
+      <p class="intro">Two apps, one install.</p>
+    </div>
+    <div class="story-grid">
+      <div class="story-card">
+        <h3>🎭 Emotion loop</h3>
+        <ul class="story-list">
+          <li><span>📸</span> Grabs a frame from Reachy's built-in camera</li>
+          <li><span>🎙</span> Samples audio from the microphone array</li>
+          <li><span>🧠</span> Runs face + audio fusion via EmotionDetector</li>
+          <li><span>📦</span> Emits an ActionCommand → plays move + announces emotion</li>
+        </ul>
+      </div>
+      <div class="story-card secondary">
+        <h3>🤖 Gemini conversation</h3>
+        <ul class="story-list">
+          <li><span>🗣</span> Listens to your voice via Reachy's mic (VAD)</li>
+          <li><span>✍️</span> Transcribes speech → sends to Gemini with full history</li>
+          <li><span>🔍</span> Gemini calls detect_emotion tool when it wants to check your mood</li>
+          <li><span>🔊</span> Plays Gemini's response as speech + matching robot move</li>
+        </ul>
+      </div>
+      <div class="story-card">
+        <h3>Robot response actions</h3>
+        <p class="story-text">
+          Both modes use the same Reachy Mini action vocabulary. The emotion
+          result drives the choice of pre-recorded animation.
+        </p>
+        <div class="chips">
+          <span class="chip">idle</span>
+          <span class="chip">acknowledge</span>
+          <span class="chip">comfort</span>
+          <span class="chip">speak</span>
+          <span class="chip">gesture</span>
+          <span class="chip">stub</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Installation -->
+  <div class="section">
+    <div class="section-header">
+      <h2>Installation</h2>
+      <p class="intro">One command from your Reachy Mini dashboard, or install manually.</p>
+    </div>
+    <div class="story-grid">
+      <div class="story-card">
+        <h3>🖥 Dashboard (one-click)</h3>
+        <p class="story-text">
+          Open Reachy Mini Control in your browser, find <strong>Reachy Emotion</strong>
+          in the app store, and hit <strong>Install</strong>. All Python dependencies
+          (including the emotion detection SDK) are fetched automatically.
+        </p>
+      </div>
+      <div class="story-card">
+        <h3>🛠 Manual install</h3>
+        <p class="story-text">
+          Clone this Space and install with pip or uv:
+        </p>
+        <div class="chips">
+          <span class="chip">pip install -e .</span>
+          <span class="chip">ffmpeg required for TTS</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p>
+      Reachy Emotion App · Built with the
+      <a href="https://huggingface.co/docs/reachy_mini">Reachy Mini SDK</a>.
+      Explore more apps on <a href="https://hf.co/reachy-mini">Hugging Face</a>.
+    </p>
+  </footer>
+
+</body>
+</html>

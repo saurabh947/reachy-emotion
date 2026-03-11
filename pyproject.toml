@@ -5,16 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "reachy-emotion"
 version = "0.1.0"
-description = "Reachy Mini app: emotion detection + robot response via ActionCommand"
+description = "Reachy Mini emotion-detection app: detects human emotions and responds with movement and speech"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-    "emotion-detection-action",
-    "reachy-mini",
+    # Reachy Mini robot SDK
+    "reachy-mini>=1.0.0",
+    # Emotion detection SDK (installed from GitHub)
+    "emotion-detection-action @ git+https://github.com/saurabh947/emotion-detector.git",
+    # Vision
     "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    # Text-to-Speech
     "gtts>=2.4.0",
     "pydub>=0.25.0",
-    "numpy>=1.24.0",
+    # Gemini conversation
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    # Voice input (STT)
+    "SpeechRecognition>=3.10.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +31,21 @@ dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",
 ]
+
+[project.scripts]
+# Emotion-detection app (continuous loop)
+reachy-emotion = "reachy_emotion.main:main"
+# Gemini conversation app
+reachy-emotion-chat = "reachy_emotion.conversation_app:_cli_main"
+
+[project.entry-points."reachy_mini_apps"]
+# Both apps appear in Reachy Mini Control dashboard
+reachy_emotion = "reachy_emotion.main:ReachyEmotionApp"
+reachy_emotion_conversation = "reachy_emotion.conversation_app:ReachyConversationApp"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]

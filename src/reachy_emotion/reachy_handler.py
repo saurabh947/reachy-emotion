@@ -19,16 +19,31 @@ ANNOUNCE_INTERVAL_SEC = 5.0
 
 
 class ReachyMiniActionHandler(BaseActionHandler):
-    """Action handler that maps ActionCommand to Reachy Mini SDK commands."""
+    """Action handler that maps ActionCommand to Reachy Mini SDK commands.
+
+    Can be used in two ways:
+
+    1. Standalone (handler owns the connection):
+       handler = ReachyMiniActionHandler()
+       detector = EmotionDetector(config, action_handler=handler)
+       detector.initialize()  # calls handler.connect()
+
+    2. App framework (ReachyMini already connected by framework):
+       handler = ReachyMiniActionHandler(mini=reachy_mini)
+       detector = EmotionDetector(config, action_handler=handler)
+       detector.initialize()  # connect() reuses the provided instance
+    """
 
     def __init__(
         self,
+        mini: Any = None,
         media_backend: str = "default",
         announce_enabled: bool = True,
         announce_interval: float = ANNOUNCE_INTERVAL_SEC,
         name: str = "reachy_mini",
     ) -> None:
         super().__init__(name=name)
+        self._external_mini = mini   # Pre-connected instance from app framework (not owned)
         self._media_backend = media_backend
         self._announce_enabled = announce_enabled
         self._announce_interval = announce_interval
@@ -46,21 +61,28 @@ class ReachyMiniActionHandler(BaseActionHandler):
 
     def connect(self) -> bool:
         try:
-            from reachy_mini import ReachyMini
             from reachy_mini.motion.recorded_move import RecordedMoves
 
-            mini = ReachyMini(media_backend=self._media_backend)
-            self._mini = mini.__enter__()  # Enter context manager to activate connection
+            if self._external_mini is not None:
+                # App framework mode: ReachyMini is already connected; reuse it
+                self._mini = self._external_mini
+            else:
+                # Standalone mode: create and enter context manager ourselves
+                from reachy_mini import ReachyMini
+                mini = ReachyMini(media_backend=self._media_backend)
+                self._mini = mini.__enter__()
+
             self._recorded_moves = RecordedMoves(EMOTIONS_LIBRARY)
             self._is_connected = True
-            logger.info("ReachyMiniActionHandler connected")
+            logger.info("ReachyMiniActionHandler connected (external=%s)", self._external_mini is not None)
             return True
         except Exception as e:
             logger.error("Failed to connect ReachyMini: %s", e)
             return False
 
     def disconnect(self) -> None:
-        if self._mini is not None:
+        if self._external_mini is None and self._mini is not None:
+            # Only close the connection if we opened it ourselves
             try:
                 self._mini.__exit__(None, None, None)
             except Exception:

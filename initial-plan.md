@@ -1,6 +1,6 @@
 ---
 name: Reachy Emotion App
-overview: Build a lightweight Reachy Mini app. The Reachy Mini domain receives ActionCommand as input. The ReachyMini SDK provides Camera, Mic, Speaker, RecordedMoves, and Motion. The handler invokes SDK Motion and RecordedMoves; TTS uses the SDK Speaker API.
+overview: Build a lightweight Reachy Mini app. The Reachy Mini domain receives ActionCommand as input. The ReachyMini SDK provides Camera, Mic, Speaker, RecordedMoves, and Motion. The handler invokes SDK Motion and RecordedMoves; TTS uses the SDK Speaker API. A second mode uses Google Gemini as the conversational brain, with emotion detection as a Gemini function tool call.
 todos: []
 isProject: false
 ---
@@ -8,6 +8,8 @@ isProject: false
 # Reachy Mini Emotion-Responsive App
 
 ## Architecture
+
+### Mode 1 — Continuous Emotion Detection Loop
 
 ```mermaid
 flowchart LR
@@ -40,7 +42,50 @@ flowchart LR
     TTS -->|play_sound push_audio_sample| Speaker
 ```
 
-**Domain boundary**: The Reachy Mini domain receives `ActionCommand` as its sole input. The ReachyMini SDK (camera, mic, speaker, RecordedMoves, motion) is the platform the handler and TTS use. The handler invokes SDK motion and RecordedMoves; TTS generates audio and uses the SDK's speaker API to play it.
+**Domain boundary**: The Reachy Mini domain receives `ActionCommand` as its sole input. The ReachyMini SDK (camera, mic, speaker, RecordedMoves, motion) is the platform the handler and TTS use.
+
+---
+
+### Mode 2 — Gemini Conversation with Emotion as a Tool Call
+
+```mermaid
+flowchart LR
+    subgraph UserInput
+        Voice[Voice / Mic]
+        STT[SpeechRecognition STT]
+    end
+
+    subgraph GeminiCloud [Gemini API]
+        Chat[Chat Session + History]
+        Tool[detect_emotion tool call]
+    end
+
+    subgraph ReachyMiniDomain [Reachy Mini Domain]
+        Bridge[GeminiBridge]
+        TTS[speak_text TTS]
+        EmotionDet[EmotionDetector on-demand]
+        subgraph ReachySDK [ReachyMini SDK]
+            Camera[Camera]
+            Mic[Microphone]
+            Speaker[Speaker]
+            RecordedMoves[RecordedMoves]
+        end
+    end
+
+    Voice --> Mic --> STT --> Chat
+    Chat -->|function call| Tool --> Bridge
+    Bridge --> EmotionDet
+    Camera -->|get_frame| EmotionDet
+    Mic -->|get_audio_sample| EmotionDet
+    EmotionDet -->|emotion result| Chat
+    Chat -->|response text| TTS
+    TTS --> Speaker
+    Bridge -->|emotion detected| RecordedMoves
+```
+
+**Conversation history**: Maintained automatically by `client.chats.create()` in the `google-genai` SDK. Every `chat.send_message()` call includes the full prior history plus the system prompt.
+
+**Tool call flow**: Gemini may call `detect_emotion` before formulating its reply. The bridge executes the local emotion SDK (camera + audio sample), returns the result dict to Gemini, and Gemini then generates its text response informed by the emotion data.
 
 
 
@@ -48,26 +93,33 @@ flowchart LR
 
 **Reachy Mini domain input** – `ActionCommand` from the emotion SDK (`[ActionCommand](../emotion-detection-action/src/emotion_detection_action/core/types.py)`):
 
-- `action_type`: idle, acknowledge, comfort, de_escalate, reassure, wait, retreat, approach, gesture, speak
+- `action_type`: idle, acknowledge, comfort, de_escalate, reassure, wait, retreat, approach, gesture, speak, stub
 - `parameters`: `{gesture, intensity, emotion, duration, ...}`
 
 **Reachy Mini SDK** ([docs](https://huggingface.co/docs/reachy_mini/SDK/readme)) – platform providing:
 
 | SDK component | API | Used by |
 |---------------|-----|---------|
-| Camera | `get_frame()` → BGR numpy array | Emotion Detector (main loop passes frame) |
-| Microphone | `get_audio_sample()` → (samples, 2) float32 @ 16 kHz | Emotion Detector (main loop passes audio) |
-| Speaker | `play_sound(path)` or `start_playing()` + `push_audio_sample()` + `stop_playing()` | TTS Announcer |
-| RecordedMoves | `RecordedMoves("pollen-robotics/reachy-mini-emotions-library")`, `get(move_name)` | Handler (via `play_move`) |
+| Camera | `get_frame()` → BGR numpy array | Emotion Detector (main loop / Gemini tool call) |
+| Microphone | `get_audio_sample()` → (samples, 2) float32 @ 16 kHz | Emotion Detector / Voice Input |
+| Speaker | `play_sound(path)` | TTS Announcer (`speak_text`) |
+| RecordedMoves | `RecordedMoves("pollen-robotics/reachy-mini-emotions-library")` | Handler, conversation reaction |
 | Motion | `goto_target()`, `play_move(move)` | Handler |
+| Gaze | `look_at_image(u, v, duration)` | Main loop face tracking |
 
 - `ReachyMini(media_backend="default")` enables Camera and Microphone; `start_recording()` / `stop_recording()` required for Mic
-- `look_at_image(u, v, duration)` – optional gaze at face
 
 **Emotion SDK** ([detector.py](../emotion-detection-action/src/emotion_detection_action/core/detector.py)):
 
 - Receives frame (from Reachy Camera) and audio (from Reachy Mic) via `process_frame(frame, audio=None, timestamp=0.0)`
-- Outputs `ActionCommand` to Reachy Mini domain
+- Outputs `ActionCommand` to Reachy Mini domain (Mode 1) or `EmotionResult` dict to Gemini (Mode 2)
+
+**GeminiBridge** (`gemini_bridge.py`):
+
+- Wraps `client.chats.create()` — persistent multi-turn session with full history
+- Registers `detect_emotion` as a `FunctionDeclaration` tool
+- `chat(user_text) -> (response_text, EmotionResult | None)`
+- Runs emotion detection on-demand when Gemini calls the tool
 
 ---
 
@@ -75,109 +127,82 @@ flowchart LR
 
 **Domain separation**: The emotion SDK produces `ActionCommand`; the Reachy Mini domain consumes it. The Reachy Mini domain uses the ReachyMini SDK (Camera, Mic, Speaker, RecordedMoves, Motion). The handler invokes Motion and RecordedMoves; TTS invokes Speaker. The domain boundary is the `ActionCommand` interface.
 
-### 1. Project Setup
+### 1. Project Setup ✅
 
 Create minimal project structure in `reachy-emotion/`:
 
-- `pyproject.toml` with dependencies:
-  - `emotion-detection-action` (path or editable install from `../emotion-detection-action`)
-  - `reachy-mini` (from PyPI)
-  - `opencv-python` (for camera)
-  - `gtts` (Google Text-to-Speech) or `pyttsx3` (offline TTS)
+- `pyproject.toml` with dependencies (see Dependencies Summary)
 - `README.md` with setup and run instructions
+- `.env.example` for Gemini API key
+- `.gitignore` for secrets and build artifacts
 
-### 2. ReachyMiniActionHandler (Reachy Mini Domain)
+### 2. ReachyMiniActionHandler (Reachy Mini Domain) ✅
 
-The handler lives in the **Reachy Mini domain**. It receives `ActionCommand` as input and invokes the **ReachyMini SDK** for motion and announcement:
+The handler lives in the **Reachy Mini domain**. It receives `ActionCommand` as input and invokes the **ReachyMini SDK** for motion and announcement.
 
-- **Motion** – `goto_target()`, `play_move()` (handler calls SDK Motion APIs)
-- **RecordedMoves** – handler uses `RecordedMoves.get(move_name)` and passes to `play_move()` (RecordedMoves is part of the SDK)
-- **Announce** – handler delegates to TTS Announcer, which uses the SDK Speaker API (see section 2b)
+**Dual-mode support**:
+- `ReachyMiniActionHandler()` — standalone: creates and owns its `ReachyMini` connection
+- `ReachyMiniActionHandler(mini=existing_mini)` — app framework mode: reuses a pre-connected instance (does not call `__enter__`/`__exit__`)
 
-**Location**: `reachy_emotion/reachy_handler.py` (or `src/reachy_emotion/`)
+**Action-to-SDK mapping**:
 
-**Design**:
+| action_type | SDK invocation |
+| ----------- | -------------- |
+| idle        | `goto_target(antennas=[0, 0])` |
+| acknowledge | RecordedMoves: `play_move(happy)` or antenna nod |
+| comfort     | RecordedMoves: `play_move(sad)` |
+| de_escalate | `goto_target(body_yaw=-0.2)` |
+| reassure    | RecordedMoves: `play_move(fearful)` |
+| wait        | No-op |
+| retreat     | `goto_target(body_yaw=-0.3)` |
+| approach    | `goto_target(body_yaw=0.2)` |
+| gesture / stub | RecordedMoves: pick from `parameters["emotion"]` |
+| speak       | TTS only (no motion) |
 
-- Extend `BaseActionHandler` from `emotion_detection_action.actions.base`; implements `execute(action: ActionCommand) -> bool` – receives `ActionCommand` as input
-- Implement `connect()` / `disconnect()`: instantiate `ReachyMini(media_backend=...)` and hold reference to the SDK
-- Implement `execute(action: ActionCommand) -> bool`: dispatch by `action_type`, invoke SDK Motion and RecordedMoves
-- **Shared instance**: The handler's `ReachyMini` instance is also used by the main loop to get frames (Camera) and audio (Mic) from the SDK
+### 2b. TTS Announcer ✅
 
-**Action-to-SDK mapping** (handler invokes Motion and RecordedMoves):
+**File**: `reachy_emotion/tts_announcer.py`
 
+- `speak_text(text, mini, lang)` — core function: gTTS → MP3 → pydub → 16 kHz mono WAV → `mini.media.play_sound()`
+- `announce_emotion(emotion, mini)` — delegates to `speak_text("I detect you seem {emotion}", ...)`
+- `ffmpeg` system dependency: detected via `shutil.which`; missing ffmpeg logs a one-time error and disables TTS silently
 
-| action_type | SDK invocation                                                                      |
-| ----------- | ----------------------------------------------------------------------------------- |
-| idle        | Motion: `goto_target(antennas=[0, 0])`                                               |
-| acknowledge | RecordedMoves + Motion: `play_move(moves.get("happy"))` or `goto_target` head nod   |
-| comfort     | RecordedMoves + Motion: `play_move(moves.get("sad"))`                                |
-| de_escalate | Motion: `goto_target(body_yaw=-0.2)`                                                |
-| reassure    | RecordedMoves + Motion: `play_move(moves.get("fearful"))`                            |
-| wait        | No-op (hold pose)                                                                    |
-| retreat     | Motion: `goto_target(body_yaw=-0.3)`                                                |
-| approach    | Motion: `goto_target(body_yaw=0.2)`                                                 |
-| gesture     | RecordedMoves + Motion: pick move from `parameters["gesture"]` or `parameters["emotion"]` |
-| speak       | TTS Announcer → Speaker: `play_sound` / `push_audio_sample`                          |
+### 3. Main App Entry Point ✅
 
+**File**: `reachy_emotion/main.py`
 
-**Emotion announcement** (handler → TTS → Speaker):
+- `ReachyEmotionApp(ReachyMiniApp)` — dashboard app class; `run(reachy_mini, stop_event)` calls `_run_emotion_loop()`
+- `_run_emotion_loop(mini, stop_event, ...)` — shared logic for both app class and CLI
+- CLI: `reachy-emotion` script; flags: `--sim`, `--device`, `--media-backend`, `--use-webcam`, `--no-audio`, `--no-announce`, `--no-gaze`, `--no-robot`
+- Face gaze: `gaze_at_face(mini, detection)` calls `mini.look_at_image(u, v)` toward face bbox center
 
-- On each `execute(action)`, after invoking Motion/RecordedMoves, the handler calls the TTS Announcer
-- TTS generates speech from text (e.g. "I detect you seem happy") and uses the **SDK Speaker API** (`play_sound` or `push_audio_sample`) to play it
-- Use `action.parameters.get("emotion")` or pass `EmotionResult` from main loop
-- **TTS flow**: Generate speech → convert to float32 16 kHz mono → `mini.media.start_playing()` → `push_audio_sample(chunk)` → `stop_playing()`
-- **TTS library**: `gTTS` or `pyttsx3`; announcement template: "I detect you seem {emotion}"
-- **Throttling**: Only announce when emotion changes or after minimum interval (e.g. 5 seconds)
+### 4. Gemini Conversation ✅
 
-**Emotion fallback**: When `action_type` is generic (e.g. `gesture`, `stub`), use `parameters.get("emotion")` to select from emotions library: `happy`, `sad`, `angry`, `fearful`, `surprised`, `disgusted`, `neutral`. Use `RecordedMoves.list_moves()` to discover available move names and map emotion labels to closest match.
+#### 4a. GeminiBridge (`gemini_bridge.py`)
 
-**Threading**: Reachy Mini SDK calls are blocking. Run `execute()` in a thread or use non-blocking `set_target` for high-frequency updates. For `play_move`, blocking is acceptable. Run announcement in a background thread to avoid blocking the main loop.
+- `GeminiBridge(api_key, mini, system_prompt, model)`
+- `initialize()`: creates `client.chats.create()` with system prompt + `detect_emotion` tool; initialises `EmotionDetector` with `LoggingActionHandler` (no physical actions on tool calls)
+- `chat(user_text) -> (response_text, EmotionResult|None)`: sends message, handles tool call loop, returns final text
+- `shutdown()`: releases emotion detector
 
-### 2b. TTS Announcer – Reachy Mini Domain
+#### 4b. Voice Input (`voice_input.py`)
 
-**Location**: `reachy_emotion/tts_announcer.py` (within the Reachy Mini domain)
+- `listen(mini, sample_rate, language) -> str | None`
+- Energy-based VAD: records until silence detected after speech; max 12 s
+- Converts numpy audio → WAV bytes → `speech_recognition.AudioData` → Google STT
 
-- **Role**: Convert detected emotion to speech and play through the **ReachyMini SDK Speaker** (`play_sound` / `push_audio_sample`)
-- **API**: `announce(emotion: str, mini: ReachyMini) -> None` – generates "I detect you seem {emotion}", converts to audio, invokes SDK Speaker API
-- **Flow**: Handler → TTS Announcer → SDK Speaker (per diagram)
-- **Throttling**: Caller (handler or main loop) enforces minimum interval and emotion-change check before calling `announce()`
+#### 4c. Conversation App (`conversation_app.py`)
 
-### 3. Main App Entry Point
+- `run_conversation_loop(mini, stop_event, system_prompt, voice_mode, language, model)`
+- Per-turn: `listen()` → `bridge.chat()` → `_react_to_emotion()` (RecordedMoves) → `speak_text()` (TTS)
+- `ReachyConversationApp(ReachyMiniApp)` — dashboard app; `_cli_main()` — `reachy-emotion-chat` script
 
-**File**: `reachy_emotion/main.py` or `run.py`
+### 5. Simulation and Offline Testing ✅
 
-**Data flow** (aligned with diagram):
-
-1. **ReachyMini SDK** provides Camera and Microphone
-2. Main loop polls `frame = mini.media.get_frame()` (Camera) and `audio = mini.media.get_audio_sample()` (Mic)
-3. Main loop passes frame and audio to **Emotion Detector** → Pipeline → VLA → `ActionCommand`
-4. Main loop passes `ActionCommand` to **Handler** (Reachy Mini domain input)
-5. Handler invokes SDK Motion, RecordedMoves, and TTS; TTS invokes SDK Speaker
-
-- Parse CLI: `--sim`, `--device`, `--media-backend`, `--use-webcam`, `--no-audio`, `--no-announce`
-- Connect: `ReachyMini(media_backend=...)` – enables SDK Camera and Mic
-- **Audio setup**: Call `mini.media.start_recording()` after connect; `stop_recording()` on shutdown
-- Frame loop: poll SDK Camera and Mic → `detector.process_frame(frame, audio=audio_mono, ...)` → handler receives `result.action`
-- Handle `get_frame()` or `get_audio_sample()` returning `None` (retry/skip)
-
-**Audio format conversion** (SDK Mic → Emotion SDK):
-
-- SDK Mic returns `(samples, 2)` float32 stereo at 16 kHz; convert to mono: `audio.mean(axis=1)`
-- Resample if SDK rate ≠ 16 kHz
-
-**Fallback**: `--use-webcam N` for video; `--no-audio` skips Mic; `--no-announce` disables TTS → Speaker.
-
-### 4. Optional: Face Gaze (Looking at Humans)
-
-- `DetectionResult` contains face bounding box; use SDK `look_at_image(u, v, duration)` with face center
-- Recommend: main loop calls `mini.look_at_image(face_center)` before `handler.execute(result.action)` – gaze uses SDK Motion, handler uses SDK Motion/RecordedMoves/Speaker
-
-### 5. Simulation and Offline Testing
-
-- **Reachy daemon**: `uv run reachy-mini-daemon --sim` – SDK Camera and Mic may be simulated or unavailable
+- **Reachy daemon**: `uv run reachy-mini-daemon --sim`
 - **Emotion SDK**: `vla_enabled=False` for stub mode
-- **No-robot mode**: `--no-robot --use-webcam 0` – use `LoggingActionHandler` instead of Reachy Mini domain (no SDK)
-- **Audio in sim**: If SDK Mic returns `None`, pass `audio=None` to `process_frame`
+- **No-robot mode**: `--no-robot` — uses `LoggingActionHandler` and webcam
+- **Text conversation**: `reachy-emotion-chat --text` — skips STT, reads from stdin
 
 ---
 
@@ -185,36 +210,54 @@ The handler lives in the **Reachy Mini domain**. It receives `ActionCommand` as 
 
 ```
 reachy-emotion/
-├── pyproject.toml
+├── .env.example                      # API key template (copy to .env)
+├── .gitignore
+├── index.html                        # HF Space landing page
+├── style.css
+├── pyproject.toml                    # Package config + all dependencies
 ├── README.md
-├── initial-plan.md
-├── src/
-│   └── reachy_emotion/
-│       ├── __init__.py
-│       ├── reachy_handler.py   # Handler: ActionCommand → SDK Motion, RecordedMoves, TTS
-│       ├── tts_announcer.py     # TTS → SDK Speaker
-│       └── main.py              # Orchestrates SDK Camera/Mic → Detector → Handler
-└── run.sh (optional)
+├── initial-plan.md                   # This file
+└── src/
+    └── reachy_emotion/
+        ├── __init__.py
+        ├── main.py                   # ReachyEmotionApp (emotion loop) + CLI
+        ├── reachy_handler.py         # ActionCommand → Motion, RecordedMoves, TTS
+        ├── tts_announcer.py          # speak_text() + announce_emotion() via gTTS/pydub
+        ├── gemini_bridge.py          # Gemini chat session + detect_emotion tool
+        ├── voice_input.py            # STT from Reachy mic via SpeechRecognition
+        └── conversation_app.py       # ReachyConversationApp (Gemini chat) + CLI
+tests/
+    ├── __init__.py
+    ├── test_tts_announcer.py
+    ├── test_voice_input.py
+    ├── test_gemini_bridge.py
+    └── test_reachy_handler.py
 ```
 
 ---
 
 ## Dependencies Summary
 
-
-| Package                  | Purpose                                                                  |
-| ------------------------ | ------------------------------------------------------------------------ |
-| emotion-detection-action | Emotion + VLA pipeline, ActionCommand, BaseActionHandler                 |
-| reachy-mini              | ReachyMini SDK: Camera, Mic, Speaker, RecordedMoves, Motion               |
-| opencv-python            | Frame handling (BGR numpy from SDK Camera)                               |
-| gTTS / pyttsx3           | TTS Announcer (generates audio for SDK Speaker)                          |
-
+| Package | Purpose |
+| ------- | ------- |
+| `emotion-detection-action` | Emotion + VLA pipeline, ActionCommand, BaseActionHandler |
+| `reachy-mini` | ReachyMini SDK: Camera, Mic, Speaker, RecordedMoves, Motion |
+| `opencv-python` | Frame handling (BGR numpy from SDK Camera) |
+| `numpy` | Audio mono conversion, array math |
+| `gtts` | Google Text-to-Speech (generates MP3) |
+| `pydub` | MP3 → 16 kHz mono WAV conversion for Speaker API |
+| `google-genai` | Gemini API client (chat sessions, function calling) |
+| `python-dotenv` | Load GEMINI_API_KEY from `.env` |
+| `SpeechRecognition` | Google STT: numpy audio → transcribed text |
+| **System: ffmpeg** | Required by pydub for MP3 decoding |
 
 ---
 
-## Open Questions
+## Open Questions / Future Work
 
-1. **Emotions library move names**: The `pollen-robotics/reachy-mini-emotions-library` has moves via `list_moves()`. Confirm at runtime which emotion labels (happy, sad, etc.) exist. Fallback to `goto_target(antennas=[...])` for missing moves.
-2. **Action throttling**: To avoid overwhelming the robot, consider debouncing: only execute a new action if the previous one finished or after a minimum interval (e.g. 2–3 seconds).
-3. **VLA vs stub**: Start with `vla_enabled=False` (stub) for faster iteration; enable VLA when ready for richer action suggestions.
-4. **TTS choice**: gTTS (simple, online) vs pyttsx3 (offline, system voices) vs edge-tts (high quality, online). Default to gTTS for simplicity; add pyttsx3 as fallback for offline use.
+1. **Emotions library move names**: Confirm at runtime which emotion labels exist via `list_moves()`. Fallback to `goto_target(antennas=[...])` for missing moves.
+2. **Action throttling**: Debounce rapid identical actions (currently 2 s interval + 5 s TTS interval).
+3. **VLA vs stub**: Currently `vla_enabled=False`; enable for richer action suggestions.
+4. **VAD improvement**: Replace energy-based VAD in `voice_input.py` with `webrtcvad` for more accurate speech endpoint detection.
+5. **Context window management**: Gemini conversation history grows without bound; add optional turn-count limit for very long sessions.
+6. **Offline TTS**: Add `pyttsx3` or `edge-tts` as a fallback for environments without internet.
