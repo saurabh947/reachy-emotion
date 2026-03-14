@@ -159,6 +159,12 @@ def run_conversation_loop(
     else:
         logger.info("Text mode — type your message (Ctrl-C or Ctrl-D to stop)")
 
+    # Activate speaker for the whole session (matches SDK session-level audio lifecycle)
+    try:
+        mini.media.start_playing()
+    except Exception as exc:
+        logger.warning("Could not activate speaker: %s", exc)
+
     try:
         while not stop_event.is_set():
             # 1. Input
@@ -211,4 +217,8 @@ def run_conversation_loop(
                 mini.media.stop_recording()
             except Exception:
                 pass
+        try:
+            mini.media.stop_playing()
+        except Exception:
+            pass
         bridge.shutdown()

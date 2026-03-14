@@ -76,7 +76,8 @@ def main() -> None:
         description="Reachy Emotion: Gemini conversation with on-demand emotion detection"
     )
     parser.add_argument("--sim", action="store_true",
-                        help="Simulation mode (start reachy-mini-daemon --sim first)")
+                        help="Simulation mode (start the daemon with --sim first; "
+                             "macOS: mjpython -m reachy_mini.daemon.app.main --sim)")
     parser.add_argument("--text", action="store_true",
                         help="Text input instead of voice (useful for testing)")
     parser.add_argument("--lang", default="en-US",

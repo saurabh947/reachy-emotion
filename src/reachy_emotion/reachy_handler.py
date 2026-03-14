@@ -143,19 +143,19 @@ class ReachyMiniActionHandler(BaseActionHandler):
             emotion = params.get("emotion", "neutral")
 
             if action_type == "idle":
-                self._mini.goto_target(antennas=np.array([0.0, 0.0]), duration=0.5)
+                self._mini.goto_target(antennas=np.deg2rad([0, 0]), duration=0.5)
             elif action_type == "acknowledge":
                 move_name = self._emotion_to_move("happy")
                 if move_name:
                     self._mini.play_move(self._recorded_moves.get(move_name), initial_goto_duration=1.0)
                 else:
-                    self._mini.goto_target(antennas=np.array([0.5, 0.5]), duration=0.5)
+                    self._mini.goto_target(antennas=np.deg2rad([30, 30]), duration=0.5)
             elif action_type == "comfort":
                 move_name = self._emotion_to_move("sad")
                 if move_name:
                     self._mini.play_move(self._recorded_moves.get(move_name), initial_goto_duration=1.0)
                 else:
-                    self._mini.goto_target(antennas=np.array([0.2, 0.2]), duration=0.8)
+                    self._mini.goto_target(antennas=np.deg2rad([15, 15]), duration=0.8)
             elif action_type == "de_escalate":
                 self._mini.goto_target(body_yaw=np.deg2rad(-15), duration=1.0)
             elif action_type == "reassure":
@@ -163,7 +163,7 @@ class ReachyMiniActionHandler(BaseActionHandler):
                 if move_name:
                     self._mini.play_move(self._recorded_moves.get(move_name), initial_goto_duration=1.0)
                 else:
-                    self._mini.goto_target(antennas=np.array([0.3, 0.3]), duration=0.8)
+                    self._mini.goto_target(antennas=np.deg2rad([20, 20]), duration=0.8)
             elif action_type == "wait":
                 pass  # No-op: hold current pose
             elif action_type == "retreat":
@@ -177,14 +177,14 @@ class ReachyMiniActionHandler(BaseActionHandler):
                 if move_name:
                     self._mini.play_move(self._recorded_moves.get(move_name), initial_goto_duration=1.0)
                 else:
-                    self._mini.goto_target(antennas=np.array([0.3, 0.3]), duration=0.5)
+                    self._mini.goto_target(antennas=np.deg2rad([20, 20]), duration=0.5)
             else:
                 # Unknown: try emotion-based RecordedMove, fall back to neutral
                 move_name = self._emotion_to_move(emotion)
                 if move_name:
                     self._mini.play_move(self._recorded_moves.get(move_name), initial_goto_duration=1.0)
                 else:
-                    self._mini.goto_target(antennas=np.array([0.0, 0.0]), duration=0.5)
+                    self._mini.goto_target(antennas=np.deg2rad([0, 0]), duration=0.5)
 
             return True
         except Exception as e:

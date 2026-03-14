@@ -4,6 +4,7 @@ import os
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -57,7 +58,7 @@ def test_speak_text_logs_ffmpeg_error_exactly_once():
 # ---------------------------------------------------------------------------
 
 def test_speak_text_returns_true_on_success():
-    """Full happy-path: gTTS + pydub succeed → play_sound called → returns True."""
+    """Full happy-path: gTTS + pydub succeed → push_audio_sample called → returns True."""
     from reachy_emotion import tts_announcer
     tts_announcer._FFMPEG_WARNING_SHOWN = False
 
@@ -65,23 +66,28 @@ def test_speak_text_returns_true_on_success():
     mock_segment = MagicMock()
     mock_segment.set_frame_rate.return_value = mock_segment
     mock_segment.set_channels.return_value = mock_segment
+    # raw_data returns 4 int16 bytes = 2 samples = 0.000125 s (no meaningful sleep)
+    mock_segment.raw_data = np.zeros(4, dtype=np.int16).tobytes()
 
     mock_gtts_instance = MagicMock()
 
     with patch("reachy_emotion.tts_announcer._ffmpeg_available", return_value=True), \
          patch("reachy_emotion.tts_announcer.gTTS", return_value=mock_gtts_instance), \
          patch("pydub.AudioSegment.from_mp3", return_value=mock_segment), \
-         patch("reachy_emotion.tts_announcer.tempfile.mkstemp") as mock_mkstemp, \
+         patch("reachy_emotion.tts_announcer.tempfile.mkstemp", return_value=(0, "/tmp/fake_tts.mp3")), \
          patch("reachy_emotion.tts_announcer.os.close"), \
-         patch("reachy_emotion.tts_announcer.os.unlink"):
-
-        # First mkstemp call → MP3 path, second → WAV path
-        mock_mkstemp.side_effect = [(0, "/tmp/fake_tts.mp3"), (0, "/tmp/fake_tts.wav")]
+         patch("reachy_emotion.tts_announcer.os.unlink"), \
+         patch("reachy_emotion.tts_announcer.time.sleep"):
 
         result = tts_announcer.speak_text("hello reachy", mini)
 
     assert result is True
-    mini.media.play_sound.assert_called_once_with("/tmp/fake_tts.wav")
+    mini.media.push_audio_sample.assert_called_once()
+    # Verify the sample shape: (N, 1) float32
+    audio_arg = mini.media.push_audio_sample.call_args[0][0]
+    assert audio_arg.ndim == 2
+    assert audio_arg.shape[1] == 1
+    assert audio_arg.dtype == np.float32
 
 
 def test_speak_text_cleans_up_mp3_even_when_pydub_fails():
