@@ -1,6 +1,8 @@
 """Tests for tts_announcer: speak_text() and announce_emotion()."""
 
-from unittest.mock import MagicMock, call, patch
+import os
+import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -55,33 +57,54 @@ def test_speak_text_logs_ffmpeg_error_exactly_once():
 # ---------------------------------------------------------------------------
 
 def test_speak_text_returns_true_on_success():
+    """Full happy-path: gTTS + pydub succeed → play_sound called → returns True."""
     from reachy_emotion import tts_announcer
     tts_announcer._FFMPEG_WARNING_SHOWN = False
 
     mini = MagicMock()
-    mock_gtts = MagicMock()
     mock_segment = MagicMock()
     mock_segment.set_frame_rate.return_value = mock_segment
     mock_segment.set_channels.return_value = mock_segment
 
+    mock_gtts_instance = MagicMock()
+
     with patch("reachy_emotion.tts_announcer._ffmpeg_available", return_value=True), \
-         patch("reachy_emotion.tts_announcer.gTTS", return_value=mock_gtts), \
-         patch("reachy_emotion.tts_announcer.tempfile.NamedTemporaryFile") as mock_tmpfile, \
-         patch("reachy_emotion.tts_announcer.os.unlink"), \
-         patch("pydub.AudioSegment.from_mp3", return_value=mock_segment):
+         patch("reachy_emotion.tts_announcer.gTTS", return_value=mock_gtts_instance), \
+         patch("pydub.AudioSegment.from_mp3", return_value=mock_segment), \
+         patch("reachy_emotion.tts_announcer.tempfile.mkstemp") as mock_mkstemp, \
+         patch("reachy_emotion.tts_announcer.os.close"), \
+         patch("reachy_emotion.tts_announcer.os.unlink"):
 
-        # Make NamedTemporaryFile context manager return objects with .name
-        ctx = MagicMock()
-        ctx.__enter__ = MagicMock(return_value=MagicMock(name="/tmp/fake.mp3"))
-        ctx.__exit__ = MagicMock(return_value=False)
-        mock_tmpfile.return_value = ctx
+        # First mkstemp call → MP3 path, second → WAV path
+        mock_mkstemp.side_effect = [(0, "/tmp/fake_tts.mp3"), (0, "/tmp/fake_tts.wav")]
 
-        # Just verify it doesn't crash — success path is tightly coupled to filesystem
-        # so we mainly assert no exception is raised
-        try:
-            tts_announcer.speak_text("hello reachy", mini)
-        except Exception:
-            pass  # filesystem mocking is best-effort; the logic path is tested
+        result = tts_announcer.speak_text("hello reachy", mini)
+
+    assert result is True
+    mini.media.play_sound.assert_called_once_with("/tmp/fake_tts.wav")
+
+
+def test_speak_text_cleans_up_mp3_even_when_pydub_fails():
+    """If AudioSegment.from_mp3 raises, the MP3 temp file must still be deleted."""
+    from reachy_emotion import tts_announcer
+    tts_announcer._FFMPEG_WARNING_SHOWN = False
+
+    deleted_paths: list[str] = []
+
+    def track_unlink(path: str) -> None:
+        deleted_paths.append(path)
+
+    with patch("reachy_emotion.tts_announcer._ffmpeg_available", return_value=True), \
+         patch("reachy_emotion.tts_announcer.gTTS", return_value=MagicMock()), \
+         patch("pydub.AudioSegment.from_mp3", side_effect=RuntimeError("decode fail")), \
+         patch("reachy_emotion.tts_announcer.tempfile.mkstemp", return_value=(0, "/tmp/fake.mp3")), \
+         patch("reachy_emotion.tts_announcer.os.close"), \
+         patch("reachy_emotion.tts_announcer.os.unlink", side_effect=track_unlink):
+
+        result = tts_announcer.speak_text("hello", MagicMock())
+
+    assert result is False
+    assert "/tmp/fake.mp3" in deleted_paths
 
 
 def test_speak_text_returns_false_on_gtts_exception():
@@ -89,7 +112,11 @@ def test_speak_text_returns_false_on_gtts_exception():
     tts_announcer._FFMPEG_WARNING_SHOWN = False
 
     with patch("reachy_emotion.tts_announcer._ffmpeg_available", return_value=True), \
-         patch("reachy_emotion.tts_announcer.gTTS", side_effect=RuntimeError("network error")):
+         patch("reachy_emotion.tts_announcer.gTTS", side_effect=RuntimeError("network error")), \
+         patch("reachy_emotion.tts_announcer.tempfile.mkstemp", return_value=(0, "/tmp/fake.mp3")), \
+         patch("reachy_emotion.tts_announcer.os.close"), \
+         patch("reachy_emotion.tts_announcer.os.unlink"):
+
         result = tts_announcer.speak_text("hello", MagicMock())
 
     assert result is False
@@ -132,12 +159,12 @@ def test_announce_emotion_passes_lang():
 def test_ffmpeg_available_returns_true_when_on_path():
     from reachy_emotion.tts_announcer import _ffmpeg_available
 
-    with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+    with patch("reachy_emotion.tts_announcer.shutil.which", return_value="/usr/bin/ffmpeg"):
         assert _ffmpeg_available() is True
 
 
 def test_ffmpeg_available_returns_false_when_not_on_path():
     from reachy_emotion.tts_announcer import _ffmpeg_available
 
-    with patch("shutil.which", return_value=None):
+    with patch("reachy_emotion.tts_announcer.shutil.which", return_value=None):
         assert _ffmpeg_available() is False

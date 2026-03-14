@@ -9,7 +9,9 @@ Install ffmpeg before running:
 
 import logging
 import os
+import shutil
 import tempfile
+import threading
 from typing import TYPE_CHECKING
 
 from gtts import gTTS
@@ -19,12 +21,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Thread-safe one-time warning for missing ffmpeg.
+_ffmpeg_warning_lock = threading.Lock()
 _FFMPEG_WARNING_SHOWN = False
 
 
 def _ffmpeg_available() -> bool:
     """Check whether ffmpeg is on PATH (required by pydub for MP3 decoding)."""
-    import shutil
     return shutil.which("ffmpeg") is not None
 
 
@@ -48,39 +51,47 @@ def speak_text(text: str, mini: "ReachyMini", lang: str = "en") -> bool:
         return False
 
     if not _ffmpeg_available():
-        if not _FFMPEG_WARNING_SHOWN:
-            logger.error(
-                "ffmpeg not found — TTS disabled. "
-                "Install: brew install ffmpeg (macOS) | sudo apt install ffmpeg (Ubuntu)"
-            )
-            _FFMPEG_WARNING_SHOWN = True
+        with _ffmpeg_warning_lock:
+            if not _FFMPEG_WARNING_SHOWN:
+                logger.error(
+                    "ffmpeg not found — TTS disabled. "
+                    "Install: brew install ffmpeg (macOS) | sudo apt install ffmpeg (Ubuntu)"
+                )
+                _FFMPEG_WARNING_SHOWN = True
         return False
 
     try:
         from pydub import AudioSegment
 
         tts = gTTS(text=text, lang=lang, slow=False)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_f:
-            tts.save(mp3_f.name)
+
+        # Create MP3 temp file — save *and* clean up inside one try/finally
+        mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
+        os.close(mp3_fd)
+        try:
+            tts.save(mp3_path)
+            audio = AudioSegment.from_mp3(mp3_path)
+        finally:
             try:
-                # Reachy Mini expects WAV at 16 kHz mono
-                audio = AudioSegment.from_mp3(mp3_f.name)
-                audio = audio.set_frame_rate(16000).set_channels(1)
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_f:
-                    audio.export(wav_f.name, format="wav")
-                    try:
-                        mini.media.play_sound(wav_f.name)
-                        return True
-                    finally:
-                        try:
-                            os.unlink(wav_f.name)
-                        except OSError:
-                            pass
-            finally:
-                try:
-                    os.unlink(mp3_f.name)
-                except OSError:
-                    pass
+                os.unlink(mp3_path)
+            except OSError:
+                pass
+
+        audio = audio.set_frame_rate(16000).set_channels(1)
+
+        # Create WAV temp file — export and play inside one try/finally
+        wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(wav_fd)
+        try:
+            audio.export(wav_path, format="wav")
+            mini.media.play_sound(wav_path)
+            return True
+        finally:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+
     except Exception as e:
         logger.warning("TTS failed: %s", e)
         return False

@@ -23,6 +23,25 @@ import sys
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Portaudio check  (must be defined before _DEPS to avoid NameError)
+# ---------------------------------------------------------------------------
+
+def _check_portaudio() -> bool:
+    """Return True if portaudio is usable (sounddevice or pyaudio can load it)."""
+    try:
+        import sounddevice  # noqa: F401
+        return True
+    except (ImportError, OSError):
+        pass
+    try:
+        import pyaudio  # noqa: F401
+        return True
+    except (ImportError, OSError):
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Dependency definitions
 # ---------------------------------------------------------------------------
 
@@ -44,26 +63,6 @@ _DEPS: dict[str, dict] = {
         "manual": "http://www.portaudio.com/download.html",
     },
 }
-
-
-def _check_portaudio() -> bool:
-    """Return True if portaudio is usable (sounddevice or pyaudio can load it)."""
-    try:
-        import sounddevice  # noqa: F401
-        return True
-    except (ImportError, OSError):
-        pass
-    try:
-        import pyaudio  # noqa: F401
-        return True
-    except (ImportError, OSError):
-        pass
-    return False
-
-
-# Patch the forward-referenced lambda after defining the function
-_DEPS["portaudio"]["check"] = _check_portaudio
-
 
 # ---------------------------------------------------------------------------
 # OS detection helpers
@@ -195,10 +194,20 @@ def _run_install(name: str, os_name: str, *, dry_run: bool) -> bool:
         return True
 
     try:
-        subprocess.run(cmd, check=True)
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5-minute cap; apt/brew can be slow on first run
+        )
+        logger.debug("Install output: %s", result.stdout[-500:] if result.stdout else "")
         return True
+    except subprocess.TimeoutExpired:
+        logger.warning("Install command timed out for %s", name)
+        return False
     except subprocess.CalledProcessError as exc:
-        logger.debug("Install command failed: %s", exc)
+        logger.debug("Install command failed: %s\nstderr: %s", exc, exc.stderr)
         return False
 
 
@@ -241,3 +250,7 @@ def _cli_main() -> None:
 
     ok = install_missing(dry_run=args.dry_run)
     sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    _cli_main()

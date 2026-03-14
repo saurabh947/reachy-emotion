@@ -17,40 +17,33 @@ tags:
 
 # Reachy Emotion
 
-Lightweight Reachy Mini app that detects human emotions using the robot's built-in camera and microphone, then responds with pre-recorded robot movements and spoken announcements.
+Gemini-powered conversation app for Reachy Mini. Talk to Reachy naturally — Gemini maintains the conversation and calls the local emotion-detection SDK as a tool when it wants to know how you're feeling.
 
-## Architecture
-
-This app ships two modes, both registered as separate Reachy Mini dashboard apps:
-
-### Mode 1 — Continuous Emotion Detection Loop (`ReachyEmotionApp`)
+## How it works
 
 ```
-Camera + Mic → EmotionDetector → ActionCommand → ReachyMiniActionHandler
-                                                      ↓              ↓
-                                               RecordedMoves    speak_text (TTS)
-                                                      ↓              ↓
-                                                  Motion          Speaker
+You speak
+   ↓
+Reachy mic → SpeechRecognition → text → Gemini (with full conversation history)
+                                              ↓  when Gemini calls detect_emotion tool
+                                   camera + mic → EmotionDetector → result → Gemini
+                                              ↓
+                                    Gemini response text
+                                              ↓
+                              RecordedMove (if emotion read) + TTS → Speaker
 ```
 
-Detects emotions on every camera frame, plays matching pre-recorded animations and announces the emotion aloud.
+Gemini decides when to read your emotion — it's a tool call, not a continuous loop.
 
-### Mode 2 — Gemini Conversation (`ReachyConversationApp`)
+## Prerequisites
 
-```
-Mic → SpeechRecognition STT → Gemini Chat Session (with history)
-                                        ↓ (tool call when needed)
-                               detect_emotion → Camera + Mic → EmotionDetector
-                                        ↓
-                               response text → speak_text (TTS) → Speaker
-                               emotion result → RecordedMoves
-```
-
-Gemini drives the conversation. The `detect_emotion` function is registered as a Gemini tool call — Gemini decides when to read the emotion, then uses the result to inform its reply. Full conversation history is maintained automatically by the `google-genai` SDK's `Chat` object.
+- Python 3.10–3.12
+- A [Gemini API key](https://aistudio.google.com/app/apikey) (free tier available)
+- Reachy Mini robot (or run `--text` mode for testing without hardware)
 
 ## Installation
 
-### Via `install.sh` (recommended — installs everything)
+### Option A — `install.sh` (recommended, installs everything)
 
 ```bash
 git clone https://huggingface.co/spaces/<your-username>/reachy-emotion
@@ -58,113 +51,113 @@ cd reachy-emotion
 ./install.sh
 ```
 
-`install.sh` handles the full install in one command:
-1. System packages: `ffmpeg` + `portaudio` via `apt` (Linux) or `brew` (macOS)
-2. Python package + all dependencies via `pip install -e .`
+This single command:
+1. Installs system packages: `ffmpeg` + `portaudio` (via `apt` on Linux, `brew` on macOS)
+2. Installs all Python dependencies via `pip install -e .`
 3. Creates `.env` from template if it doesn't exist
-4. Verifies all dependencies are present
 
-Options:
 ```bash
-./install.sh --dry-run    # preview what would be installed
+./install.sh --dry-run    # preview without making changes
 ./install.sh --skip-sys   # skip system packages (Python deps only)
 ```
 
-### Via Reachy Mini Dashboard (one-click)
+### Option B — Reachy Mini Dashboard (one-click)
 
-Open Reachy Mini Control (`http://<robot-ip>:8000`), find **Reachy Emotion** in the app store, and click **Install**.
+Open Reachy Mini Control at `http://<robot-ip>:8000`, find **Reachy Emotion** in the app store, and click **Install**.
 
-> **Note:** The dashboard installs Python dependencies automatically but cannot install system packages. After the dashboard install, SSH into the robot and run:
-> ```bash
-> reachy-emotion-setup   # checks and installs ffmpeg + portaudio
-> ```
+After the dashboard install, SSH into the robot and run once:
+```bash
+reachy-emotion-setup    # installs ffmpeg + portaudio system packages
+```
 
-### Manual (Python only)
+### Option C — Manual
 
 ```bash
-pip install -e .           # installs all Python dependencies
-reachy-emotion-setup       # installs + verifies system dependencies
+pip install -e .           # all Python dependencies
+reachy-emotion-setup       # system dependencies (ffmpeg, portaudio)
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your Gemini API key:
-
 ```bash
 cp .env.example .env
-# then edit .env and set GEMINI_API_KEY=...
+# Edit .env and set your GEMINI_API_KEY
 ```
 
-Get a free API key at [aistudio.google.com](https://aistudio.google.com/app/apikey).
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes | From [aistudio.google.com](https://aistudio.google.com/app/apikey) |
+| `GEMINI_MODEL` | No | Default: `gemini-2.5-flash`. Options: `gemini-2.5-flash-lite`, `gemini-2.5-pro` |
+| `GEMINI_SYSTEM_PROMPT` | No | Single-line override of Reachy's built-in personality prompt |
 
 ## Usage
 
-### From the Dashboard
+### From the Reachy Mini Dashboard
 
-Two apps appear in Reachy Mini Control after installation:
+After install, **Reachy Emotion** appears in the dashboard. Click **Run** to start — no terminal needed.
 
-| App | Description |
-|---|---|
-| **Reachy Emotion** | Continuous emotion detection loop — detects faces, plays moves, announces emotions |
-| **Reachy Conversation** | Gemini-powered voice chat with emotion detection as a tool call |
-
-### CLI — Emotion detection loop
+### CLI
 
 ```bash
-reachy-emotion                       # Real robot
-reachy-emotion --sim                 # Simulation
-reachy-emotion --no-robot            # Webcam + logging only (no hardware)
+reachy-emotion                    # voice mode (speak to Reachy)
+reachy-emotion --text             # text mode (type instead of speaking — good for testing)
+reachy-emotion --sim              # simulation (start reachy-mini-daemon --sim first)
+reachy-emotion --lang fr-FR       # French
 ```
-
-### CLI — Gemini conversation
-
-```bash
-reachy-emotion-chat                  # Voice mode (speak to Reachy)
-reachy-emotion-chat --text           # Text mode (type to Reachy)
-reachy-emotion-chat --sim            # Simulation
-reachy-emotion-chat --lang fr-FR     # French voice input + responses
-```
-
-### Options — emotion loop
-
-| Flag | Description |
-|---|---|
-| `--sim` | Simulation mode (start daemon with `--sim` first) |
-| `--device cpu\|cuda\|mps` | Device for emotion models (default: cpu) |
-| `--media-backend` | Reachy media backend (`default`, `gstreamer`, `webrtc`) |
-| `--use-webcam N` | Use webcam N instead of Reachy camera |
-| `--no-audio` | Disable microphone input |
-| `--no-announce` | Disable TTS emotion announcement via speaker |
-| `--no-gaze` | Disable face gaze tracking |
-| `--no-robot` | No Reachy: webcam + logging only |
-
-### Options — conversation
 
 | Flag | Description |
 |---|---|
 | `--text` | Type input instead of speaking |
 | `--lang CODE` | STT/TTS language, e.g. `en-US`, `fr-FR` (default: `en-US`) |
-| `--model NAME` | Gemini model (default: `gemini-2.0-flash`) |
-| `--prompt TEXT` | Override the system prompt |
+| `--model NAME` | Override Gemini model |
+| `--prompt TEXT` | Override the system prompt for this session only |
 | `--sim` | Simulation mode |
-| `--media-backend` | Reachy media backend |
+| `--media-backend` | Reachy media backend (`default`, `gstreamer`, `webrtc`) |
+
+## Customising Reachy's personality
+
+**Per-run override** (not saved):
+```bash
+reachy-emotion --prompt "You are Reachy, a robot who speaks only in haiku."
+```
+
+**Persistent override** via `.env`:
+```ini
+GEMINI_SYSTEM_PROMPT=You are Reachy, a friendly robot. Keep all answers under 10 words.
+```
+
+**Full edit**: modify `DEFAULT_SYSTEM_PROMPT` in `src/reachy_emotion/gemini_bridge.py`.
+
+Priority: `--prompt` flag > `GEMINI_SYSTEM_PROMPT` env var > built-in default.
+
+## Running tests
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
 
 ## Project Structure
 
 ```
 reachy-emotion/
-├── .env.example                      # API key template (copy to .env)
+├── install.sh                        # Full installer (system + Python deps)
+├── .env.example                      # API key template → copy to .env
 ├── .gitignore
 ├── index.html                        # HF Space landing page
 ├── style.css
 ├── pyproject.toml                    # Package config + all dependencies
-├── README.md
+├── tests/                            # Unit tests
+│   ├── test_gemini_bridge.py
+│   ├── test_reachy_handler.py
+│   ├── test_tts_announcer.py
+│   └── test_voice_input.py
 └── src/reachy_emotion/
-    ├── __init__.py
-    ├── main.py                       # ReachyEmotionApp + CLI (emotion loop)
-    ├── reachy_handler.py             # ActionCommand → Motion, RecordedMoves, TTS
-    ├── tts_announcer.py              # speak_text() + announce_emotion() via gTTS/pydub
+    ├── main.py                       # ReachyEmotionApp (dashboard) + CLI entry point
+    ├── conversation_app.py           # Core conversation loop
     ├── gemini_bridge.py              # Gemini chat session + detect_emotion tool
-    ├── voice_input.py                # STT from Reachy mic via SpeechRecognition
-    └── conversation_app.py           # ReachyConversationApp + CLI (Gemini chat)
+    ├── voice_input.py                # STT from Reachy mic (energy VAD + Google STT)
+    ├── tts_announcer.py              # speak_text() → gTTS + pydub → Reachy speaker
+    ├── reachy_handler.py             # RecordedMoves mapping + EMOTIONS_LIBRARY
+    └── system_deps.py                # ffmpeg/portaudio check + install
 ```

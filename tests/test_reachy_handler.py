@@ -322,3 +322,50 @@ def test_do_announce_fires_again_for_different_emotion():
         handler._do_announce("sad")  # different emotion → fires regardless of interval
 
     assert mock_thread.call_count == 2
+
+
+def test_do_announce_is_thread_safe():
+    """Concurrent _do_announce calls for the same emotion must fire exactly once."""
+    import threading as _threading
+    from reachy_emotion.reachy_handler import ReachyMiniActionHandler
+
+    handler = ReachyMiniActionHandler()
+    handler._mini = MagicMock()
+    handler._announce_interval = 9999.0
+
+    fired: list[int] = []
+
+    def fake_thread(*args, **kwargs):
+        m = MagicMock()
+        m.start.side_effect = lambda: fired.append(1)
+        return m
+
+    with patch("reachy_emotion.reachy_handler.threading.Thread", side_effect=fake_thread):
+        threads = [
+            _threading.Thread(target=handler._do_announce, args=("happy",))
+            for _ in range(10)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert len(fired) == 1
+
+
+# ---------------------------------------------------------------------------
+# _emotion_to_move — fallback warning
+# ---------------------------------------------------------------------------
+
+def test_emotion_to_move_logs_warning_on_fallback():
+    from reachy_emotion.reachy_handler import ReachyMiniActionHandler
+
+    handler = ReachyMiniActionHandler()
+    handler._recorded_moves = _make_mock_recorded_moves(["wave", "dance"])
+
+    with patch.object(handler, "_get_available_moves", return_value=["wave"]):
+        with patch("reachy_emotion.reachy_handler.logger") as mock_log:
+            result = handler._emotion_to_move("completely_unknown")
+
+    assert result == "wave"
+    mock_log.warning.assert_called_once()

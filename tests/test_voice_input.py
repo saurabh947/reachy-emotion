@@ -110,31 +110,31 @@ def test_listen_returns_none_for_short_silent_audio():
 
 
 def test_listen_converts_stereo_to_mono():
-    """Stereo audio chunks must be converted to mono before energy computation."""
+    """Stereo audio chunks must be converted to mono (mean of channels)."""
     from reachy_emotion import voice_input
 
     mini = MagicMock()
-    # Stereo: shape (N, 2); left channel loud, right silent → mono mean should be half
+    # Stereo: left channel = 1.0, right = 0.0 → mono mean = 0.5
     stereo = np.zeros((1600, 2), dtype=np.float32)
-    stereo[:, 0] = 1.0  # left loud
+    stereo[:, 0] = 1.0
     mini.media.get_audio_sample.return_value = stereo
 
-    seen_mono = []
-
+    rms_values: list[float] = []
     original_sqrt = np.sqrt
 
     def spy_sqrt(x):
+        val = original_sqrt(x)
         if isinstance(x, (float, np.floating)):
-            seen_mono.append(float(x))
-        return original_sqrt(x)
+            rms_values.append(float(val))
+        return val
 
     with patch("reachy_emotion.voice_input._MAX_RECORDING_SEC", 0.05), \
          patch("numpy.sqrt", side_effect=spy_sqrt):
-        listen(mini)
+        voice_input.listen(mini)
 
-    # At least one energy computation should have occurred on a float value
-    # (the exact value isn't critical here; we just verify stereo→mono ran)
-    assert len(seen_mono) > 0
+    # mono mean of (1.0, 0.0) = 0.5; RMS of all-0.5 = 0.5
+    assert len(rms_values) > 0
+    assert pytest.approx(rms_values[0], abs=0.01) == 0.5
 
 
 # ---------------------------------------------------------------------------

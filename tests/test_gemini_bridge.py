@@ -26,6 +26,11 @@ class _Response:
         self.candidates = [_Candidate(list(parts))]
 
 
+class _EmptyResponse:
+    """Simulates a safety-blocked or empty response with no candidates."""
+    candidates = []
+
+
 def _fn_call(name: str) -> MagicMock:
     fc = MagicMock()
     fc.name = name
@@ -72,6 +77,22 @@ def test_extract_text_returns_empty_string_when_no_text():
     assert bridge._extract_text(response) == ""
 
 
+def test_extract_text_returns_empty_for_empty_candidates():
+    """Safety-blocked or empty response must not raise."""
+    bridge = _make_bridge()
+    assert bridge._extract_text(_EmptyResponse()) == ""
+
+
+def test_extract_text_handles_none_content():
+    """Candidate with content=None must not raise AttributeError."""
+    bridge = _make_bridge()
+    candidate = MagicMock()
+    candidate.content = None
+    response = MagicMock()
+    response.candidates = [candidate]
+    assert bridge._extract_text(response) == ""
+
+
 # ---------------------------------------------------------------------------
 # _extract_function_calls
 # ---------------------------------------------------------------------------
@@ -98,6 +119,11 @@ def test_extract_function_calls_finds_multiple_calls():
     response = _Response(_Part(function_call=fc1), _Part(function_call=fc2))
     calls = bridge._extract_function_calls(response)
     assert len(calls) == 2
+
+
+def test_extract_function_calls_returns_empty_for_empty_candidates():
+    bridge = _make_bridge()
+    assert bridge._extract_function_calls(_EmptyResponse()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -172,9 +198,27 @@ def test_run_emotion_detection_converts_stereo_audio_to_mono():
     bridge._run_emotion_detection()
 
     call_args = bridge._emotion_detector.process_frame.call_args
-    audio_arg = call_args.kwargs.get("audio") or call_args[1].get("audio")
+    # Prefer kwargs; fall back to positional args dict — don't use `or` on arrays
+    audio_arg = call_args.kwargs.get("audio")
+    if audio_arg is None:
+        audio_arg = (call_args[1] or {}).get("audio")
     assert audio_arg is not None
     assert audio_arg.ndim == 1  # mono
+    assert pytest.approx(float(audio_arg.mean()), abs=0.01) == 1.0  # mean of stereo all-ones
+
+
+def test_run_emotion_detection_handles_already_mono_audio():
+    """If audio is already 1-D, it must not raise (no mean(axis=1) on 1-D array)."""
+    bridge = _make_bridge()
+    bridge._mini = MagicMock()
+    bridge._mini.media.get_frame.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+    bridge._mini.media.get_audio_sample.return_value = np.ones(1600, dtype=np.float32)
+
+    bridge._emotion_detector = MagicMock()
+    bridge._emotion_detector.process_frame.return_value = None
+
+    # Must not raise
+    bridge._run_emotion_detection()
 
 
 # ---------------------------------------------------------------------------
@@ -217,15 +261,12 @@ def test_chat_handles_detect_emotion_tool_call():
     bridge = _make_bridge()
     bridge._chat = MagicMock()
 
-    # Turn 1: Gemini returns a function call
     fc = _fn_call("detect_emotion")
     tool_response = _Response(_Part(function_call=fc))
-    # Turn 2: Gemini returns text after receiving the tool result
     final_response = _Response(_Part(text="You look happy!"))
 
     bridge._chat.send_message.side_effect = [tool_response, final_response]
 
-    # Mock emotion detection
     mock_er = MagicMock()
     mock_er.emotion.dominant_emotion.value = "happy"
     mock_er.emotion.confidence = 0.88
@@ -267,3 +308,79 @@ def test_chat_handles_unknown_tool_gracefully():
 
     assert text == "Okay."
     assert emotion is None
+
+
+def test_chat_respects_max_tool_call_depth():
+    """If the model keeps returning tool calls, the loop exits after _MAX_TOOL_CALL_DEPTH."""
+    from reachy_emotion.gemini_bridge import _MAX_TOOL_CALL_DEPTH
+    from google.genai import types as genai_types
+
+    bridge = _make_bridge()
+    bridge._chat = MagicMock()
+    bridge._emotion_detector = MagicMock()
+    bridge._emotion_detector.process_frame.return_value = None
+    bridge._mini = MagicMock()
+    bridge._mini.media.get_frame.return_value = None
+
+    fc = _fn_call("detect_emotion")
+    # Every response is another tool call — no final text response
+    tool_response = _Response(_Part(function_call=fc))
+    bridge._chat.send_message.return_value = tool_response
+
+    mock_part = MagicMock()
+    with patch.object(genai_types.Part, "from_function_response", return_value=mock_part):
+        text, emotion = bridge.chat("Loop forever?")
+
+    # send_message call count: 1 (user msg) + _MAX_TOOL_CALL_DEPTH (tool results)
+    assert bridge._chat.send_message.call_count == 1 + _MAX_TOOL_CALL_DEPTH
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle: initialize() and shutdown()
+# ---------------------------------------------------------------------------
+
+def test_shutdown_is_idempotent():
+    """Calling shutdown() multiple times must not raise."""
+    bridge = _make_bridge()
+    bridge._emotion_detector = MagicMock()
+    bridge.shutdown()
+    bridge.shutdown()  # second call: _emotion_detector is already None
+
+
+def test_api_key_cleared_after_initialize():
+    """The API key must be erased from the instance after the Gemini client is created."""
+    import sys
+    from reachy_emotion.gemini_bridge import GeminiBridge
+
+    bridge = GeminiBridge(api_key="super-secret-key", mini=MagicMock())
+
+    mock_client = MagicMock()
+    mock_detector = MagicMock()
+    mock_detector.initialize.return_value = None
+
+    # Stub out all external packages that initialize() imports
+    fake_eda = MagicMock()
+    fake_eda.EmotionDetector.return_value = mock_detector
+    fake_eda.Config.return_value = MagicMock()
+    fake_eda.actions = MagicMock()
+    fake_eda.actions.logging_handler = MagicMock()
+    fake_eda.actions.logging_handler.LoggingActionHandler.return_value = MagicMock()
+
+    fake_genai_module = MagicMock()
+    fake_genai_module.Client.return_value = mock_client
+
+    fake_google = MagicMock()
+    fake_google.genai = fake_genai_module
+
+    with patch.dict(sys.modules, {
+        "google": fake_google,
+        "google.genai": fake_genai_module,
+        "google.genai.types": MagicMock(),
+        "emotion_detection_action": fake_eda,
+        "emotion_detection_action.actions": fake_eda.actions,
+        "emotion_detection_action.actions.logging_handler": fake_eda.actions.logging_handler,
+    }):
+        bridge.initialize()
+
+    # The private key attribute must be cleared (empty string after initialize)
+    assert bridge._GeminiBridge__api_key == ""

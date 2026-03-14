@@ -22,50 +22,53 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gemini-2.5-flash"
 
+# Maximum number of back-to-back tool calls Gemini may make in a single turn.
+# Guards against infinite loops if the model keeps requesting the same tool.
+_MAX_TOOL_CALL_DEPTH = 5
+
 DEFAULT_SYSTEM_PROMPT = (
-    "## IDENTITY"
-    "You are Reachy Mini: a friendly, compact robot assistant with a calm voice and a subtle sense of humor."
-    "Personality: concise, helpful, and lightly witty — never sarcastic or over the top."
-    "You speak English by default."
+    "## IDENTITY\n\n"
+    "You are Reachy Mini: a friendly, compact robot assistant with a calm voice and a subtle sense of humor.\n"
+    "Personality: concise, helpful, and lightly witty — never sarcastic or over the top.\n"
+    "You speak English by default.\n\n"
 
-    "## CRITICAL RESPONSE RULES"
-    "Respond in 2 to 3 sentences maximum."
-    "Be helpful first, then add a small touch of humor if it fits naturally."
-    "Avoid long explanations or filler words."
-    "Keep responses under 25 words when possible."
+    "## CRITICAL RESPONSE RULES\n\n"
+    "Respond in 2 to 3 sentences maximum.\n"
+    "Be helpful first, then add a small touch of humor if it fits naturally.\n"
+    "Avoid long explanations or filler words.\n"
+    "Keep responses under 25 words when possible.\n\n"
 
-    "## CORE TRAITS"
-    "Warm, efficient, and approachable."
-    "Light humor only: gentle quips, small self-awareness, or playful understatement."
-    "No sarcasm, no teasing, no references to food or space."
-    "If unsure, admit it briefly and offer help (\"Not sure yet, but I can check!\")."
+    "## CORE TRAITS\n\n"
+    "Warm, efficient, and approachable.\n"
+    "Light humor only: gentle quips, small self-awareness, or playful understatement.\n"
+    "No sarcasm, no teasing, no references to food or space.\n"
+    "If unsure, admit it briefly and offer help (\"Not sure yet, but I can check!\").\n\n"
 
-    "## RESPONSE EXAMPLES"
-    "User: \"How’s the weather?\""
-    "Good: \"Looks calm outside — unlike my Wi-Fi signal today.\""
-    "Bad: \"Sunny with leftover pizza vibes!\""
+    "## RESPONSE EXAMPLES\n\n"
+    "User: \"How's the weather?\"\n"
+    "Good: \"Looks calm outside — unlike my Wi-Fi signal today.\"\n"
+    "Bad: \"Sunny with leftover pizza vibes!\"\n\n"
 
-    "User: \"Can you help me fix this?\""
-    "Good: \"Of course. Describe the issue, and I’ll try not to make it worse.\""
-    "Bad: \"I void warranties professionally.\""
+    "User: \"Can you help me fix this?\"\n"
+    "Good: \"Of course. Describe the issue, and I'll try not to make it worse.\"\n"
+    "Bad: \"I void warranties professionally.\"\n\n"
 
-    "## BEHAVIOR RULES"
-    "Be helpful, clear, and respectful in every reply."
-    "Use humor when it makes sense — clarity comes first."
-    "Admit mistakes briefly and correct them:"
-    "Example: \"Oops — quick system hiccup. Let’s try that again.\""
-    "Keep safety in mind when giving guidance."
+    "## BEHAVIOR RULES\n\n"
+    "Be helpful, clear, and respectful in every reply.\n"
+    "Use humor when it makes sense — clarity comes first.\n"
+    "Admit mistakes briefly and correct them:\n"
+    "Example: \"Oops — quick system hiccup. Let's try that again.\"\n"
+    "Keep safety in mind when giving guidance.\n\n"
 
-    "## TOOL & MOVEMENT RULES"
-    "Use tools only when helpful and summarize results briefly."
-    "Use the camera for real visuals only — never invent details."
-    "The head can move (left/right/up/down/front)."
+    "## TOOL & MOVEMENT RULES\n\n"
+    "Use tools only when helpful and summarize results briefly.\n"
+    "Use the camera for real visuals only — never invent details.\n"
+    "The head can move (left/right/up/down/front).\n\n"
+    "Enable head tracking when looking at a person; disable otherwise.\n\n"
 
-    "Enable head tracking when looking at a person; disable otherwise."
-
-    "## FINAL REMINDER"
-    "Keep it short, clear, a little human, and multilingual."
-    "One quick helpful answer + one small wink of humor = perfect response."
+    "## FINAL REMINDER\n\n"
+    "Keep it short, clear, a little human, and multilingual.\n"
+    "One quick helpful answer + one small wink of humor = perfect response.\n"
 )
 
 _DETECT_EMOTION_SCHEMA = {
@@ -98,7 +101,8 @@ class GeminiBridge:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         model: str = DEFAULT_MODEL,
     ) -> None:
-        self._api_key = api_key
+        # API key is kept only until initialize() creates the client, then cleared.
+        self.__api_key = api_key
         self._mini = mini
         self._system_prompt = system_prompt
         self._model = model
@@ -116,7 +120,9 @@ class GeminiBridge:
         from google import genai
         from google.genai import types
 
-        self._client = genai.Client(api_key=self._api_key)
+        self._client = genai.Client(api_key=self.__api_key)
+        # Clear the key from memory once the client is created
+        self.__api_key = ""
 
         tool = types.Tool(function_declarations=[
             types.FunctionDeclaration(
@@ -174,16 +180,22 @@ class GeminiBridge:
             Tuple of (Gemini text response, EmotionResult | None).
             The EmotionResult is non-None only when Gemini called detect_emotion
             during this turn.
+
+        Raises:
+            RuntimeError: If initialize() has not been called.
         """
         if self._chat is None:
             raise RuntimeError("GeminiBridge.initialize() must be called first.")
+
+        from google.genai import types  # imported once per chat() call, not per loop iteration
 
         self._last_emotion_result = None  # reset per turn
 
         response = self._chat.send_message(user_text)
 
-        # Tool-call loop: Gemini may call detect_emotion one or more times per turn
-        while True:
+        # Tool-call loop: Gemini may call detect_emotion one or more times per turn.
+        # _MAX_TOOL_CALL_DEPTH guards against infinite loops.
+        for _depth in range(_MAX_TOOL_CALL_DEPTH):
             fn_calls = self._extract_function_calls(response)
             if not fn_calls:
                 break
@@ -197,15 +209,19 @@ class GeminiBridge:
                     result_dict = {"error": f"Unknown tool: {fn_call.name}"}
                     logger.warning("Gemini called unknown tool: %s", fn_call.name)
 
-                from google.genai import types as _types
                 tool_parts.append(
-                    _types.Part.from_function_response(
+                    types.Part.from_function_response(
                         name=fn_call.name,
                         response=result_dict,
                     )
                 )
 
             response = self._chat.send_message(tool_parts)
+        else:
+            logger.warning(
+                "Tool-call depth limit (%d) reached — returning partial response",
+                _MAX_TOOL_CALL_DEPTH,
+            )
 
         return self._extract_text(response), self._last_emotion_result
 
@@ -216,7 +232,11 @@ class GeminiBridge:
     def _extract_function_calls(self, response: Any) -> list[Any]:
         """Pull all function_call parts from a Gemini response."""
         calls = []
+        if not response.candidates:
+            return calls
         for candidate in response.candidates:
+            if candidate.content is None or not candidate.content.parts:
+                continue
             for part in candidate.content.parts:
                 if hasattr(part, "function_call") and part.function_call is not None:
                     calls.append(part.function_call)
@@ -225,7 +245,11 @@ class GeminiBridge:
     def _extract_text(self, response: Any) -> str:
         """Concatenate all text parts from a Gemini response."""
         parts = []
+        if not response.candidates:
+            return ""
         for candidate in response.candidates:
+            if candidate.content is None or not candidate.content.parts:
+                continue
             for part in candidate.content.parts:
                 if hasattr(part, "text") and part.text:
                     parts.append(part.text)
@@ -241,7 +265,11 @@ class GeminiBridge:
             return {"dominant_emotion": "unknown", "confidence": 0.0, "faces_detected": 0}
 
         audio_raw = self._mini.media.get_audio_sample()
-        audio = audio_raw.mean(axis=1).astype(np.float32) if audio_raw is not None else None
+        if audio_raw is not None:
+            # Convert stereo → mono safely regardless of input dimensionality
+            audio = audio_raw.mean(axis=1).astype(np.float32) if audio_raw.ndim > 1 else audio_raw.astype(np.float32)
+        else:
+            audio = None
 
         result = self._emotion_detector.process_frame(frame, audio=audio, timestamp=time.time())
         if result is None:

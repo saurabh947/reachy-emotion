@@ -118,7 +118,7 @@ success "Python package installed."
 echo ""
 echo "=== Verifying installation ==="
 if ! $DRY_RUN; then
-  python -m reachy_emotion.system_deps --check-only || true
+  reachy-emotion-setup --check-only || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -136,9 +136,9 @@ fi
 echo ""
 success "reachy-emotion is ready!"
 echo ""
-echo "  Next steps:"
+  echo "  Next steps:"
 echo "    1. Edit .env and set GEMINI_API_KEY"
 echo "    2. Start the daemon:  reachy-mini-daemon"
-echo "    3. Run emotion loop:  reachy-emotion"
-echo "       Run conversation:  reachy-emotion-chat"
+echo "    3. Run the app:       reachy-emotion"
+echo "       (or text mode):    reachy-emotion --text"
 echo ""

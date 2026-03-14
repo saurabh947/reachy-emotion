@@ -51,6 +51,7 @@ class ReachyMiniActionHandler(BaseActionHandler):
         self._recorded_moves: Any = None
         self._last_announce_emotion: str | None = None
         self._last_announce_time: float = 0.0
+        self._announce_lock = threading.Lock()  # Protects throttle state across daemon threads
         self._last_action_time: float = 0.0
         self._action_interval: float = 2.0  # Throttle actions
 
@@ -120,7 +121,14 @@ class ReachyMiniActionHandler(BaseActionHandler):
         for candidate in aliases.get(emotion_lower, [emotion_lower]):
             if candidate in available:
                 return candidate
-        return available[0] if available else None
+        if available:
+            logger.warning(
+                "No move found for emotion '%s' — falling back to first available: '%s'",
+                emotion,
+                available[0],
+            )
+            return available[0]
+        return None
 
     def _execute_motion(self, action: ActionCommand) -> bool:
         """Execute physical action via SDK Motion and RecordedMoves.
@@ -184,12 +192,22 @@ class ReachyMiniActionHandler(BaseActionHandler):
             return False
 
     def _do_announce(self, emotion: str) -> None:
-        """Announce emotion via TTS (with throttling)."""
-        now = time.time()
-        if emotion != self._last_announce_emotion or (now - self._last_announce_time) >= self._announce_interval:
-            self._last_announce_emotion = emotion
-            self._last_announce_time = now
-            threading.Thread(target=announce_emotion, args=(emotion, self._mini), daemon=True).start()
+        """Announce emotion via TTS (with throttling).
+
+        Thread-safe: a lock prevents two concurrent callers from both reading
+        a stale timestamp and double-firing the announcement.
+        """
+        with self._announce_lock:
+            now = time.time()
+            if (
+                emotion != self._last_announce_emotion
+                or (now - self._last_announce_time) >= self._announce_interval
+            ):
+                self._last_announce_emotion = emotion
+                self._last_announce_time = now
+                threading.Thread(
+                    target=announce_emotion, args=(emotion, self._mini), daemon=True
+                ).start()
 
     def get_supported_actions(self) -> list[str]:
         return super().get_supported_actions() + ["stub"]

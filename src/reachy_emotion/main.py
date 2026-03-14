@@ -13,7 +13,6 @@ import logging
 import sys
 import threading
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +49,17 @@ try:
             )
 
 except ImportError:
-    ReachyEmotionApp = None  # type: ignore[assignment,misc]
+    class ReachyEmotionApp:  # type: ignore[no-redef]
+        """Placeholder when reachy-mini SDK is not installed.
+
+        Instantiating this class will raise ImportError with a clear message.
+        """
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise ImportError(
+                "reachy-mini SDK is not installed. "
+                "Install it with: pip install reachy-mini"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +67,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     parser = argparse.ArgumentParser(
         description="Reachy Emotion: Gemini conversation with on-demand emotion detection"
     )
