@@ -50,29 +50,41 @@ Gemini drives the conversation. The `detect_emotion` function is registered as a
 
 ## Installation
 
-### Via Reachy Mini Dashboard (recommended)
-
-Open Reachy Mini Control (`http://<robot-ip>:8000`), find **Reachy Emotion** in the app store, and click **Install**. All dependencies are installed automatically.
-
-### Manual install
+### Via `install.sh` (recommended — installs everything)
 
 ```bash
-pip install git+https://github.com/pollen-robotics/reachy_mini.git  # if not already installed
-
-# Clone and install this app
 git clone https://huggingface.co/spaces/<your-username>/reachy-emotion
 cd reachy-emotion
-pip install -e .
+./install.sh
 ```
 
-All Python dependencies (including the `emotion-detection-action` SDK) are pulled automatically by `pip install -e .`.
+`install.sh` handles the full install in one command:
+1. System packages: `ffmpeg` + `portaudio` via `apt` (Linux) or `brew` (macOS)
+2. Python package + all dependencies via `pip install -e .`
+3. Creates `.env` from template if it doesn't exist
+4. Verifies all dependencies are present
 
-> **System dependency — ffmpeg**: Required for TTS (speech announcements via speaker).
-> Without it the app still runs; only voice announcements are skipped.
+Options:
+```bash
+./install.sh --dry-run    # preview what would be installed
+./install.sh --skip-sys   # skip system packages (Python deps only)
+```
+
+### Via Reachy Mini Dashboard (one-click)
+
+Open Reachy Mini Control (`http://<robot-ip>:8000`), find **Reachy Emotion** in the app store, and click **Install**.
+
+> **Note:** The dashboard installs Python dependencies automatically but cannot install system packages. After the dashboard install, SSH into the robot and run:
 > ```bash
-> brew install ffmpeg        # macOS
-> sudo apt install ffmpeg    # Ubuntu/Debian
+> reachy-emotion-setup   # checks and installs ffmpeg + portaudio
 > ```
+
+### Manual (Python only)
+
+```bash
+pip install -e .           # installs all Python dependencies
+reachy-emotion-setup       # installs + verifies system dependencies
+```
 
 ## Configuration
 

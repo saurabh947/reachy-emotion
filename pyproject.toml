@@ -33,15 +33,14 @@ dev = [
 ]
 
 [project.scripts]
-# Emotion-detection app (continuous loop)
+# Post-install system dependency check/install
+reachy-emotion-setup = "reachy_emotion.system_deps:_cli_main"
+# Main app CLI
 reachy-emotion = "reachy_emotion.main:main"
-# Gemini conversation app
-reachy-emotion-chat = "reachy_emotion.conversation_app:_cli_main"
 
 [project.entry-points."reachy_mini_apps"]
-# Both apps appear in Reachy Mini Control dashboard
+# Single app in the Reachy Mini Control dashboard
 reachy_emotion = "reachy_emotion.main:ReachyEmotionApp"
-reachy_emotion_conversation = "reachy_emotion.conversation_app:ReachyConversationApp"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

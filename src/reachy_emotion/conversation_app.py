@@ -1,16 +1,19 @@
-"""ReachyConversationApp: Gemini-powered conversational mode for Reachy Mini.
+"""conversation_app: core conversation loop for reachy-emotion.
+
+Internal support module — not a separate app.
+Entry point is main.py / ReachyEmotionApp.
 
 Flow per turn
 ─────────────
-1. Listen: record speech from Reachy's mic → transcribe via Google STT
-2. Chat:   send text to Gemini (which may call detect_emotion as a tool)
-3. React:  if Gemini called detect_emotion, play matching RecordedMove
-4. Speak:  TTS Gemini's response through Reachy's speaker
+1. Listen  : record speech from Reachy's mic → transcribe via Google STT
+2. Chat    : send text to Gemini (which may call detect_emotion as a tool)
+3. React   : if Gemini called detect_emotion, play matching RecordedMove
+4. Speak   : TTS Gemini's response through Reachy's speaker
 
 Configuration
 ─────────────
-Set GEMINI_API_KEY in a .env file (or as an environment variable).
-Optionally set GEMINI_SYSTEM_PROMPT to customise Reachy's personality.
+Set GEMINI_API_KEY in .env (required).
+Set GEMINI_MODEL   in .env (optional, default: gemini-2.5-flash).
 """
 
 import logging
@@ -22,17 +25,21 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Environment helpers
 # ---------------------------------------------------------------------------
 
-def _load_api_key() -> str:
-    """Load GEMINI_API_KEY from .env or environment. Raises ValueError if missing."""
+def _load_env() -> None:
+    """Load .env into environment (no-op if python-dotenv missing)."""
     try:
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
-        pass  # python-dotenv optional; fall back to raw env
+        pass
 
+
+def _load_api_key() -> str:
+    """Return GEMINI_API_KEY. Raises ValueError if not set."""
+    _load_env()
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
         raise ValueError(
@@ -42,8 +49,19 @@ def _load_api_key() -> str:
     return key
 
 
+def _load_model() -> str:
+    """Return Gemini model from GEMINI_MODEL env var, or the package default."""
+    from reachy_emotion.gemini_bridge import DEFAULT_MODEL
+    _load_env()
+    return os.environ.get("GEMINI_MODEL", "").strip() or DEFAULT_MODEL
+
+
+# ---------------------------------------------------------------------------
+# Physical emotion reaction
+# ---------------------------------------------------------------------------
+
 def _react_to_emotion(emotion_result: Any, mini: Any) -> None:
-    """Play a RecordedMove matching the detected emotion (best-effort, non-blocking)."""
+    """Play a RecordedMove that matches the detected emotion (best-effort)."""
     try:
         from reachy_mini.motion.recorded_move import RecordedMoves
         from reachy_emotion.reachy_handler import EMOTIONS_LIBRARY
@@ -60,7 +78,7 @@ def _react_to_emotion(emotion_result: Any, mini: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Core conversation loop (shared by app framework and CLI)
+# Core conversation loop
 # ---------------------------------------------------------------------------
 
 def run_conversation_loop(
@@ -69,28 +87,27 @@ def run_conversation_loop(
     system_prompt: str | None = None,
     voice_mode: bool = True,
     language: str = "en-US",
-    model: str = "gemini-2.0-flash",
+    model: str | None = None,
 ) -> None:
     """Drive the listen → Gemini → react → speak cycle until stop_event is set.
 
     Args:
-        mini: ReachyMini instance (already connected).
-        stop_event: Set this to exit the loop cleanly.
-        system_prompt: Custom Gemini system prompt. Defaults to DEFAULT_SYSTEM_PROMPT.
-        voice_mode: If True, listen via Reachy's mic; if False, read from stdin.
-        language: STT language code (e.g. "en-US", "fr-FR").
-        model: Gemini model name.
+        mini: Connected ReachyMini instance (owned by caller).
+        stop_event: Set to exit the loop cleanly.
+        system_prompt: Override the Gemini system prompt.
+        voice_mode: True = listen via mic; False = read from stdin.
+        language: BCP-47 language code for STT/TTS (e.g. "en-US", "fr-FR").
+        model: Gemini model name. Falls back to GEMINI_MODEL env / DEFAULT_MODEL.
     """
     from reachy_emotion.gemini_bridge import GeminiBridge, DEFAULT_SYSTEM_PROMPT
     from reachy_emotion.tts_announcer import speak_text
     from reachy_emotion.voice_input import listen
 
-    api_key = _load_api_key()
     bridge = GeminiBridge(
-        api_key=api_key,
+        api_key=_load_api_key(),
         mini=mini,
         system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
-        model=model,
+        model=model or _load_model(),
     )
     bridge.initialize()
 
@@ -98,15 +115,15 @@ def run_conversation_loop(
         mini.media.start_recording()
         logger.info("Conversation started — speak to Reachy (Ctrl-C to stop)")
     else:
-        logger.info("Text conversation started — type your message (Ctrl-C to stop)")
+        logger.info("Text mode — type your message (Ctrl-C or Ctrl-D to stop)")
 
     try:
         while not stop_event.is_set():
-            # --- Input ---
+            # 1. Input
             if voice_mode:
                 user_text = listen(mini, language=language)
                 if not user_text:
-                    continue  # nothing heard; loop again
+                    continue
             else:
                 try:
                     user_text = input("You: ").strip()
@@ -115,9 +132,9 @@ def run_conversation_loop(
                 if not user_text:
                     continue
 
-            logger.info("User → %s", user_text)
+            logger.info("User  → %s", user_text)
 
-            # --- Gemini ---
+            # 2. Gemini (may call detect_emotion tool internally)
             try:
                 response_text, emotion_result = bridge.chat(user_text)
             except Exception as exc:
@@ -125,16 +142,16 @@ def run_conversation_loop(
                 continue
 
             if not response_text:
-                logger.debug("Empty Gemini response — skipping")
+                logger.debug("Empty Gemini response — skipping turn")
                 continue
 
             logger.info("Reachy → %s", response_text)
 
-            # --- Physical reaction (if Gemini read emotion) ---
+            # 3. Physical reaction when emotion was read
             if emotion_result is not None:
                 _react_to_emotion(emotion_result, mini)
 
-            # --- Speak ---
+            # 4. Speak response
             speak_text(response_text, mini, lang=language.split("-")[0])
 
     except KeyboardInterrupt:
@@ -146,61 +163,3 @@ def run_conversation_loop(
             except Exception:
                 pass
         bridge.shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Reachy Mini App Framework class
-# ---------------------------------------------------------------------------
-
-try:
-    from reachy_mini import ReachyMini, ReachyMiniApp
-
-    class ReachyConversationApp(ReachyMiniApp):
-        """Gemini-powered conversational app for the Reachy Mini dashboard.
-
-        Install GEMINI_API_KEY in the robot's .env before starting.
-        """
-
-        custom_app_url: str | None = None
-
-        def run(self, reachy_mini: "ReachyMini", stop_event: threading.Event) -> None:
-            run_conversation_loop(mini=reachy_mini, stop_event=stop_event)
-
-except ImportError:
-    ReachyConversationApp = None  # type: ignore[assignment,misc]
-
-
-# ---------------------------------------------------------------------------
-# CLI entry point  (`reachy-emotion-chat` script)
-# ---------------------------------------------------------------------------
-
-def _cli_main() -> None:
-    """CLI wrapper: `reachy-emotion-chat [--sim] [--text] [--lang en-US] [--model gemini-2.0-flash]`."""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Reachy Mini Gemini conversation app")
-    parser.add_argument("--sim", action="store_true", help="Simulation mode")
-    parser.add_argument("--text", action="store_true", help="Text input instead of voice")
-    parser.add_argument("--lang", default="en-US", help="STT language (default: en-US)")
-    parser.add_argument("--model", default="gemini-2.0-flash", help="Gemini model name")
-    parser.add_argument("--media-backend", default="default", help="Reachy media backend")
-    parser.add_argument("--prompt", default=None, help="Custom system prompt text")
-    args = parser.parse_args()
-
-    try:
-        from reachy_mini import ReachyMini
-    except ImportError:
-        print("reachy-mini is not installed. Run: pip install reachy-mini", file=sys.stderr)
-        sys.exit(1)
-
-    stop_event = threading.Event()
-    with ReachyMini(media_backend=args.media_backend) as mini:
-        run_conversation_loop(
-            mini=mini,
-            stop_event=stop_event,
-            system_prompt=args.prompt,
-            voice_mode=not args.text,
-            language=args.lang,
-            model=args.model,
-        )

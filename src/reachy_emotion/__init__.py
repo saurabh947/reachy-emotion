@@ -1,10 +1,10 @@
-"""Reachy Mini emotion-detection and conversation app."""
+"""Reachy Emotion — Gemini-powered conversation app for Reachy Mini."""
 
-from reachy_emotion.reachy_handler import ReachyMiniActionHandler
+from reachy_emotion.main import ReachyEmotionApp
 from reachy_emotion.tts_announcer import announce_emotion, speak_text
 
 __all__ = [
-    "ReachyMiniActionHandler",
+    "ReachyEmotionApp",
     "announce_emotion",
     "speak_text",
 ]
