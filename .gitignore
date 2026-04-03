@@ -23,6 +23,7 @@ reachy_mini_env/
 # IDE
 .cursor/
 .vscode/
+.claude/
 .idea/
 *.swp
 *.swo
@@ -37,3 +38,7 @@ Thumbs.db
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+
+# Generated gRPC stubs (auto-generated from proto/emotion.proto at runtime)
+src/reachy_emotion/proto/emotion_pb2.py
+src/reachy_emotion/proto/emotion_pb2_grpc.py

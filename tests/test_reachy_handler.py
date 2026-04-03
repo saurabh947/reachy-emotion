@@ -106,10 +106,17 @@ def test_connect_returns_false_on_exception():
 
     handler = ReachyMiniActionHandler()
 
+    # Make RecordedMoves() raise so connect() hits the except branch.
+    # MagicMock(side_effect=...) means *calling* the mock raises; attribute
+    # access (i.e. `from module import RecordedMoves`) still succeeds because
+    # Python does attribute access, not a call, when doing `from x import y`.
+    rm_mock = MagicMock()
+    rm_mock.RecordedMoves.side_effect = RuntimeError("library not found")
+
     with patch.dict(sys.modules, {
-        "reachy_mini": MagicMock(side_effect=ImportError("not installed")),
+        "reachy_mini": MagicMock(),
         "reachy_mini.motion": MagicMock(),
-        "reachy_mini.motion.recorded_move": MagicMock(side_effect=ImportError),
+        "reachy_mini.motion.recorded_move": rm_mock,
     }):
         result = handler.connect()
 
@@ -325,26 +332,37 @@ def test_do_announce_fires_again_for_different_emotion():
 
 
 def test_do_announce_is_thread_safe():
-    """Concurrent _do_announce calls for the same emotion must fire exactly once."""
+    """Concurrent _do_announce calls for the same emotion must fire exactly once.
+
+    A Barrier is used so all threads enter the critical section simultaneously,
+    maximising the chance of a race condition if the lock is missing or broken.
+    """
     import threading as _threading
     from reachy_emotion.reachy_handler import ReachyMiniActionHandler
 
+    N = 10
     handler = ReachyMiniActionHandler()
     handler._mini = MagicMock()
     handler._announce_interval = 9999.0
 
     fired: list[int] = []
+    barrier = _threading.Barrier(N)
 
     def fake_thread(*args, **kwargs):
         m = MagicMock()
         m.start.side_effect = lambda: fired.append(1)
         return m
 
+    def run():
+        barrier.wait()  # all threads enter the lock simultaneously
+        handler._do_announce("happy")
+
+    # Create REAL threads before the patch is applied.
+    # patch() replaces threading.Thread globally, so _threading.Thread
+    # (same module object) would also be the mock inside the `with` block.
+    threads = [_threading.Thread(target=run) for _ in range(N)]
+
     with patch("reachy_emotion.reachy_handler.threading.Thread", side_effect=fake_thread):
-        threads = [
-            _threading.Thread(target=handler._do_announce, args=("happy",))
-            for _ in range(10)
-        ]
         for t in threads:
             t.start()
         for t in threads:

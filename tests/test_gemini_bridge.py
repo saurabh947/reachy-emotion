@@ -1,8 +1,8 @@
 """Tests for GeminiBridge: text extraction, function-call handling, tool execution."""
 
+import sys
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 
@@ -41,9 +41,20 @@ def _fn_call(name: str) -> MagicMock:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_bridge(mini=None):
+def _make_cloud_client(result=None) -> MagicMock:
+    """Return a mock EmotionCloudClient with a pre-configured get_latest_result."""
+    client = MagicMock()
+    client.get_latest_result.return_value = result
+    return client
+
+
+def _make_bridge(cloud_client=None):
     from reachy_emotion.gemini_bridge import GeminiBridge
-    return GeminiBridge(api_key="test-key", mini=mini or MagicMock(), model="gemini-test")
+    return GeminiBridge(
+        api_key="test-key",
+        cloud_client=cloud_client or _make_cloud_client(),
+        model="gemini-test",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -130,95 +141,43 @@ def test_extract_function_calls_returns_empty_for_empty_candidates():
 # _run_emotion_detection
 # ---------------------------------------------------------------------------
 
-def test_run_emotion_detection_returns_error_when_no_detector():
-    bridge = _make_bridge()
-    bridge._emotion_detector = None
+def test_run_emotion_detection_returns_error_when_no_client():
+    from reachy_emotion.gemini_bridge import GeminiBridge
+    bridge = GeminiBridge(api_key="key", cloud_client=None, model="test")
     result = bridge._run_emotion_detection()
     assert "error" in result
 
 
-def test_run_emotion_detection_returns_unknown_when_no_frame():
-    bridge = _make_bridge()
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = None
-    bridge._emotion_detector = MagicMock()
+def test_run_emotion_detection_returns_unclear_when_buffer_warming():
+    """get_latest_result() returning None means buffer still warming up."""
+    bridge = _make_bridge(cloud_client=_make_cloud_client(result=None))
     result = bridge._run_emotion_detection()
-    assert result["dominant_emotion"] == "unknown"
-    assert result["faces_detected"] == 0
-
-
-def test_run_emotion_detection_returns_neutral_when_process_frame_returns_none():
-    bridge = _make_bridge()
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
-    bridge._mini.media.get_audio_sample.return_value = None
-    bridge._emotion_detector = MagicMock()
-    bridge._emotion_detector.process_frame.return_value = None
-    result = bridge._run_emotion_detection()
-    assert result["dominant_emotion"] == "neutral"
+    assert result["dominant_emotion"] == "unclear"
     assert result["confidence"] == 0.0
+    assert "note" in result
 
 
-def test_run_emotion_detection_returns_correct_emotion_dict():
-    bridge = _make_bridge()
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
-    bridge._mini.media.get_audio_sample.return_value = None
-
-    mock_result = MagicMock()
-    mock_result.emotion.dominant_emotion.value = "happy"
-    mock_result.emotion.confidence = 0.93
-    mock_result.detection.faces = [MagicMock()]
-    mock_result.action.action_type = "acknowledge"
-
-    bridge._emotion_detector = MagicMock()
-    bridge._emotion_detector.process_frame.return_value = mock_result
-
+def test_run_emotion_detection_returns_cloud_result():
+    cloud_result = {
+        "dominant_emotion": "happy",
+        "confidence": 0.91,
+        "confidence_scores": {"happy": 0.91, "neutral": 0.05},
+        "stress": 0.1,
+        "engagement": 0.88,
+        "arousal": 0.65,
+    }
+    bridge = _make_bridge(cloud_client=_make_cloud_client(result=cloud_result))
     result = bridge._run_emotion_detection()
-
     assert result["dominant_emotion"] == "happy"
-    assert result["confidence"] == pytest.approx(0.93, abs=0.01)
-    assert result["faces_detected"] == 1
-    assert result["action_suggested"] == "acknowledge"
-    assert bridge._last_emotion_result is mock_result
+    assert result["confidence"] == pytest.approx(0.91, abs=0.01)
+    assert bridge._last_emotion_result is cloud_result
 
 
-def test_run_emotion_detection_converts_stereo_audio_to_mono():
-    """Stereo audio from Reachy's mic must be converted to mono before detection."""
-    bridge = _make_bridge()
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
-
-    stereo = np.ones((1600, 2), dtype=np.float32)
-    bridge._mini.media.get_audio_sample.return_value = stereo
-
-    bridge._emotion_detector = MagicMock()
-    bridge._emotion_detector.process_frame.return_value = None
-
+def test_run_emotion_detection_stores_last_result():
+    cloud_result = {"dominant_emotion": "sad", "confidence": 0.75}
+    bridge = _make_bridge(cloud_client=_make_cloud_client(result=cloud_result))
     bridge._run_emotion_detection()
-
-    call_args = bridge._emotion_detector.process_frame.call_args
-    # Prefer kwargs; fall back to positional args dict — don't use `or` on arrays
-    audio_arg = call_args.kwargs.get("audio")
-    if audio_arg is None:
-        audio_arg = (call_args[1] or {}).get("audio")
-    assert audio_arg is not None
-    assert audio_arg.ndim == 1  # mono
-    assert pytest.approx(float(audio_arg.mean()), abs=0.01) == 1.0  # mean of stereo all-ones
-
-
-def test_run_emotion_detection_handles_already_mono_audio():
-    """If audio is already 1-D, it must not raise (no mean(axis=1) on 1-D array)."""
-    bridge = _make_bridge()
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
-    bridge._mini.media.get_audio_sample.return_value = np.ones(1600, dtype=np.float32)
-
-    bridge._emotion_detector = MagicMock()
-    bridge._emotion_detector.process_frame.return_value = None
-
-    # Must not raise
-    bridge._run_emotion_detection()
+    assert bridge._last_emotion_result == cloud_result
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +205,7 @@ def test_chat_returns_text_when_no_tool_calls():
 def test_chat_resets_last_emotion_result_each_turn():
     bridge = _make_bridge()
     bridge._chat = MagicMock()
-    bridge._last_emotion_result = MagicMock()  # leftover from previous turn
+    bridge._last_emotion_result = {"dominant_emotion": "sad"}  # leftover from previous turn
     bridge._chat.send_message.return_value = _Response(_Part(text="Hi"))
 
     _, emotion = bridge.chat("Hello")
@@ -255,10 +214,18 @@ def test_chat_resets_last_emotion_result_each_turn():
 
 
 def test_chat_handles_detect_emotion_tool_call():
-    """Full tool-call loop: Gemini calls detect_emotion, gets result, returns text."""
+    """Full tool-call loop: Gemini calls detect_emotion, gets cloud result, returns text."""
     from google.genai import types as genai_types
 
-    bridge = _make_bridge()
+    cloud_result = {
+        "dominant_emotion": "happy",
+        "confidence": 0.88,
+        "confidence_scores": {"happy": 0.88},
+        "stress": 0.1,
+        "engagement": 0.9,
+        "arousal": 0.6,
+    }
+    bridge = _make_bridge(cloud_client=_make_cloud_client(result=cloud_result))
     bridge._chat = MagicMock()
 
     fc = _fn_call("detect_emotion")
@@ -267,24 +234,12 @@ def test_chat_handles_detect_emotion_tool_call():
 
     bridge._chat.send_message.side_effect = [tool_response, final_response]
 
-    mock_er = MagicMock()
-    mock_er.emotion.dominant_emotion.value = "happy"
-    mock_er.emotion.confidence = 0.88
-    mock_er.detection.faces = [MagicMock()]
-    mock_er.action.action_type = "acknowledge"
-
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
-    bridge._mini.media.get_audio_sample.return_value = None
-    bridge._emotion_detector = MagicMock()
-    bridge._emotion_detector.process_frame.return_value = mock_er
-
     mock_part = MagicMock()
     with patch.object(genai_types.Part, "from_function_response", return_value=mock_part):
         text, emotion = bridge.chat("How am I feeling?")
 
     assert text == "You look happy!"
-    assert emotion is mock_er
+    assert emotion == cloud_result
     assert bridge._chat.send_message.call_count == 2
 
 
@@ -300,7 +255,6 @@ def test_chat_handles_unknown_tool_gracefully():
     final_response = _Response(_Part(text="Okay."))
 
     bridge._chat.send_message.side_effect = [tool_response, final_response]
-    bridge._emotion_detector = MagicMock()
 
     mock_part = MagicMock()
     with patch.object(genai_types.Part, "from_function_response", return_value=mock_part):
@@ -315,15 +269,10 @@ def test_chat_respects_max_tool_call_depth():
     from reachy_emotion.gemini_bridge import _MAX_TOOL_CALL_DEPTH
     from google.genai import types as genai_types
 
-    bridge = _make_bridge()
+    bridge = _make_bridge(cloud_client=_make_cloud_client(result=None))
     bridge._chat = MagicMock()
-    bridge._emotion_detector = MagicMock()
-    bridge._emotion_detector.process_frame.return_value = None
-    bridge._mini = MagicMock()
-    bridge._mini.media.get_frame.return_value = None
 
     fc = _fn_call("detect_emotion")
-    # Every response is another tool call — no final text response
     tool_response = _Response(_Part(function_call=fc))
     bridge._chat.send_message.return_value = tool_response
 
@@ -342,33 +291,23 @@ def test_chat_respects_max_tool_call_depth():
 def test_shutdown_is_idempotent():
     """Calling shutdown() multiple times must not raise."""
     bridge = _make_bridge()
-    bridge._emotion_detector = MagicMock()
     bridge.shutdown()
-    bridge.shutdown()  # second call: _emotion_detector is already None
+    bridge.shutdown()
 
 
 def test_api_key_cleared_after_initialize():
     """The API key must be erased from the instance after the Gemini client is created."""
-    import sys
     from reachy_emotion.gemini_bridge import GeminiBridge
 
-    bridge = GeminiBridge(api_key="super-secret-key", mini=MagicMock())
+    bridge = GeminiBridge(
+        api_key="super-secret-key",
+        cloud_client=_make_cloud_client(),
+        model="test",
+    )
 
     mock_client = MagicMock()
-    mock_detector = MagicMock()
-    mock_detector.initialize.return_value = None
-
-    # Stub out all external packages that initialize() imports
-    fake_eda = MagicMock()
-    fake_eda.EmotionDetector.return_value = mock_detector
-    fake_eda.Config.return_value = MagicMock()
-    fake_eda.actions = MagicMock()
-    fake_eda.actions.logging_handler = MagicMock()
-    fake_eda.actions.logging_handler.LoggingActionHandler.return_value = MagicMock()
-
     fake_genai_module = MagicMock()
     fake_genai_module.Client.return_value = mock_client
-
     fake_google = MagicMock()
     fake_google.genai = fake_genai_module
 
@@ -376,11 +315,7 @@ def test_api_key_cleared_after_initialize():
         "google": fake_google,
         "google.genai": fake_genai_module,
         "google.genai.types": MagicMock(),
-        "emotion_detection_action": fake_eda,
-        "emotion_detection_action.actions": fake_eda.actions,
-        "emotion_detection_action.actions.logging_handler": fake_eda.actions.logging_handler,
     }):
         bridge.initialize()
 
-    # The private key attribute must be cleared (empty string after initialize)
     assert bridge._GeminiBridge__api_key == ""

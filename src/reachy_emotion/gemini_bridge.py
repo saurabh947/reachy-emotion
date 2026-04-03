@@ -1,22 +1,26 @@
 """GeminiBridge: Gemini API chat session with emotion detection as a function tool.
 
-The emotion_detection tool lets Gemini decide when to read the human's emotional state
-using Reachy's camera and microphone. All other conversation turns go straight through
-the Gemini API.
+The detect_emotion tool lets Gemini decide when to read the human's emotional
+state.  Instead of running local inference, it queries the emotion-cloud gRPC
+service via :class:`~reachy_emotion.cloud_client.EmotionCloudClient`, which
+streams camera frames continuously in the background and stores the latest
+result from the cloud.
 
 Usage::
 
-    bridge = GeminiBridge(api_key="...", mini=mini)
+    client = EmotionCloudClient(mini=mini, endpoint="34.x.x.x:50051")
+    client.start()
+
+    bridge = GeminiBridge(api_key="...", cloud_client=client)
     bridge.initialize()
     response_text, emotion_result = bridge.chat("Hello Reachy!")
     bridge.shutdown()
+
+    client.stop()
 """
 
 import logging
-import time
 from typing import Any
-
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +45,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "## CORE TRAITS\n\n"
     "Warm, efficient, and approachable.\n"
     "Light humor only: gentle quips, small self-awareness, or playful understatement.\n"
-    "No sarcasm, no teasing, no references to food or space.\n"
+    "No sarcasm, no teasing\n"
     "If unsure, admit it briefly and offer help (\"Not sure yet, but I can check!\").\n\n"
 
     "## RESPONSE EXAMPLES\n\n"
@@ -74,9 +78,9 @@ DEFAULT_SYSTEM_PROMPT = (
 _DETECT_EMOTION_SCHEMA = {
     "name": "detect_emotion",
     "description": (
-        "Capture a frame from Reachy's camera and a short audio sample from the microphone "
-        "to detect the human's current emotional state. Returns the dominant emotion, "
-        "confidence level, and a suggested robot action."
+        "Read the human's current emotional state from the emotion-cloud inference "
+        "service, which analyses the live camera feed. Returns the dominant emotion, "
+        "overall confidence, and derived stress / engagement / arousal metrics."
     ),
     "parameters": {
         "type": "object",
@@ -89,39 +93,44 @@ _DETECT_EMOTION_SCHEMA = {
 class GeminiBridge:
     """Manages a multi-turn Gemini chat session with emotion detection as a tool call.
 
-    The bridge owns a lightweight EmotionDetector (with a no-op handler) used exclusively
-    when Gemini invokes the detect_emotion tool. All robot *actions* (motion, TTS) are
-    handled by the caller (conversation_app.py) after the chat() call returns.
+    Emotion detection is delegated entirely to the cloud: the bridge holds a
+    reference to an :class:`~reachy_emotion.cloud_client.EmotionCloudClient`
+    that streams camera frames to emotion-cloud in the background.  When Gemini
+    invokes ``detect_emotion`` the bridge just calls
+    ``cloud_client.get_latest_result()`` — no local model, no GPU needed on the
+    robot.
+
+    All robot *actions* (motion, TTS) are handled by the caller
+    (conversation_app.py) after :meth:`chat` returns.
     """
 
     def __init__(
         self,
         api_key: str,
-        mini: Any,
+        cloud_client: Any,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         model: str = DEFAULT_MODEL,
     ) -> None:
         # API key is kept only until initialize() creates the client, then cleared.
         self.__api_key = api_key
-        self._mini = mini
+        self._cloud_client = cloud_client
         self._system_prompt = system_prompt
         self._model = model
         self._client: Any = None
         self._chat: Any = None
-        self._emotion_detector: Any = None
-        self._last_emotion_result: Any = None
+        self._last_emotion_result: dict | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
-        """Set up the Gemini client, chat session, and emotion detector."""
+        """Set up the Gemini client and chat session."""
         from google import genai
         from google.genai import types
 
         self._client = genai.Client(api_key=self.__api_key)
-        # Clear the key from memory once the client is created
+        # Clear the key from memory once the client is created.
         self.__api_key = ""
 
         tool = types.Tool(function_declarations=[
@@ -143,22 +152,12 @@ class GeminiBridge:
             ),
         )
 
-        # Lazy-init emotion detector (LoggingActionHandler: no robot motion on tool calls)
-        from emotion_detection_action import Config, EmotionDetector
-        from emotion_detection_action.actions.logging_handler import LoggingActionHandler
-
-        handler = LoggingActionHandler(verbose=False)
-        config = Config(device="cpu", vla_enabled=False)
-        self._emotion_detector = EmotionDetector(config, action_handler=handler)
-        self._emotion_detector.initialize()
-
         logger.info("GeminiBridge ready (model=%s)", self._model)
 
     def shutdown(self) -> None:
-        """Release the emotion detector."""
-        if self._emotion_detector is not None:
-            self._emotion_detector.shutdown()
-            self._emotion_detector = None
+        """Release the Gemini client."""
+        self._client = None
+        self._chat = None
         logger.info("GeminiBridge shutdown")
 
     # ------------------------------------------------------------------
@@ -166,19 +165,19 @@ class GeminiBridge:
     # ------------------------------------------------------------------
 
     @property
-    def last_emotion_result(self) -> Any:
-        """The most recent EmotionResult returned by the detect_emotion tool, or None."""
+    def last_emotion_result(self) -> dict | None:
+        """The most recent emotion result dict from this turn, or None."""
         return self._last_emotion_result
 
-    def chat(self, user_text: str) -> tuple[str, Any]:
+    def chat(self, user_text: str) -> tuple[str, dict | None]:
         """Send a user message, handle any tool calls, and return Gemini's reply.
 
         Args:
             user_text: Transcribed or typed user input.
 
         Returns:
-            Tuple of (Gemini text response, EmotionResult | None).
-            The EmotionResult is non-None only when Gemini called detect_emotion
+            Tuple of (Gemini text response, emotion result dict | None).
+            The emotion dict is non-None only when Gemini called detect_emotion
             during this turn.
 
         Raises:
@@ -187,14 +186,13 @@ class GeminiBridge:
         if self._chat is None:
             raise RuntimeError("GeminiBridge.initialize() must be called first.")
 
-        from google.genai import types  # imported once per chat() call, not per loop iteration
+        from google.genai import types
 
         self._last_emotion_result = None  # reset per turn
 
         response = self._chat.send_message(user_text)
 
         # Tool-call loop: Gemini may call detect_emotion one or more times per turn.
-        # _MAX_TOOL_CALL_DEPTH guards against infinite loops.
         for _depth in range(_MAX_TOOL_CALL_DEPTH):
             fn_calls = self._extract_function_calls(response)
             if not fn_calls:
@@ -256,29 +254,22 @@ class GeminiBridge:
         return " ".join(parts).strip()
 
     def _run_emotion_detection(self) -> dict:
-        """Execute emotion detection and return a JSON-serialisable result dict."""
-        if self._emotion_detector is None:
-            return {"error": "Emotion detector not initialised"}
+        """Fetch the latest emotion result from emotion-cloud and return it.
 
-        frame = self._mini.media.get_frame()
-        if frame is None:
-            return {"dominant_emotion": "unknown", "confidence": 0.0, "faces_detected": 0}
+        Returns a JSON-serialisable dict suitable for a Gemini function response.
+        Falls back gracefully if the cloud client has no result yet (buffer
+        still warming up) or if the client is unavailable.
+        """
+        if self._cloud_client is None:
+            return {"error": "EmotionCloudClient not available"}
 
-        audio_raw = self._mini.media.get_audio_sample()
-        if audio_raw is not None:
-            # Convert stereo → mono safely regardless of input dimensionality
-            audio = audio_raw.mean(axis=1).astype(np.float32) if audio_raw.ndim > 1 else audio_raw.astype(np.float32)
-        else:
-            audio = None
-
-        result = self._emotion_detector.process_frame(frame, audio=audio, timestamp=time.time())
+        result = self._cloud_client.get_latest_result()
         if result is None:
-            return {"dominant_emotion": "neutral", "confidence": 0.0, "faces_detected": 0}
+            return {
+                "dominant_emotion": "unclear",
+                "confidence": 0.0,
+                "note": "emotion-cloud buffer still warming up — no result yet",
+            }
 
         self._last_emotion_result = result
-        return {
-            "dominant_emotion": result.emotion.dominant_emotion.value,
-            "confidence": round(float(result.emotion.confidence), 2),
-            "faces_detected": len(result.detection.faces),
-            "action_suggested": result.action.action_type,
-        }
+        return result

@@ -12,9 +12,10 @@ Flow per turn
 
 Configuration
 ─────────────
-Set GEMINI_API_KEY     in .env (required).
-Set GEMINI_MODEL       in .env (optional, default: gemini-2.5-flash).
-Set GEMINI_SYSTEM_PROMPT in .env (optional, single-line override of the default prompt).
+Set GEMINI_API_KEY          in .env (required).
+Set EMOTION_CLOUD_ENDPOINT  in .env (required for emotion detection).
+Set GEMINI_MODEL            in .env (optional, default: gemini-2.5-flash).
+Set GEMINI_SYSTEM_PROMPT    in .env (optional, single-line override).
 """
 
 import logging
@@ -68,9 +69,15 @@ def _load_model() -> str:
 
 
 def _load_system_prompt() -> str | None:
-    """Return GEMINI_SYSTEM_PROMPT from env if set, otherwise None (use built-in default)."""
+    """Return GEMINI_SYSTEM_PROMPT from env if set, otherwise None."""
     _load_env()
     return os.environ.get("GEMINI_SYSTEM_PROMPT", "").strip() or None
+
+
+def _load_cloud_endpoint() -> str | None:
+    """Return EMOTION_CLOUD_ENDPOINT from env if set, otherwise None."""
+    _load_env()
+    return os.environ.get("EMOTION_CLOUD_ENDPOINT", "").strip() or None
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +96,8 @@ def _get_recorded_moves(library: str) -> Any | None:
     return _recorded_moves_cache[library]
 
 
-def _react_to_emotion(emotion_result: Any, mini: Any) -> None:
-    """Play a RecordedMove that matches the detected emotion (best-effort)."""
+def _react_to_emotion(emotion_result: dict, mini: Any) -> None:
+    """Play a RecordedMove matching the dominant emotion returned by emotion-cloud."""
     try:
         from reachy_emotion.reachy_handler import EMOTIONS_LIBRARY
 
@@ -99,7 +106,10 @@ def _react_to_emotion(emotion_result: Any, mini: Any) -> None:
             return
 
         moves = recorded_moves.list_moves()
-        emotion_label = emotion_result.emotion.dominant_emotion.value.lower()
+        emotion_label = emotion_result.get("dominant_emotion", "").lower()
+        if not emotion_label or emotion_label == "unclear":
+            return
+
         match = next((m for m in moves if emotion_label in m.lower()), None)
         if match:
             logger.info("Playing move: %s", match)
@@ -119,6 +129,7 @@ def run_conversation_loop(
     voice_mode: bool = True,
     language: str = "en-US",
     model: str | None = None,
+    cloud_endpoint: str | None = None,
 ) -> None:
     """Drive the listen → Gemini → react → speak cycle until stop_event is set.
 
@@ -130,27 +141,70 @@ def run_conversation_loop(
         voice_mode: True = listen via mic; False = read from stdin.
         language: BCP-47 language code for STT/TTS (e.g. "en-US", "fr-FR").
         model: Gemini model name. Falls back to GEMINI_MODEL env / DEFAULT_MODEL.
+        cloud_endpoint: emotion-cloud gRPC address (e.g. "34.x.x.x:50051").
+            Falls back to EMOTION_CLOUD_ENDPOINT env var.
     """
+    from reachy_emotion.cloud_client import EmotionCloudClient
     from reachy_emotion.gemini_bridge import GeminiBridge, DEFAULT_SYSTEM_PROMPT
     from reachy_emotion.tts_announcer import speak_text
     from reachy_emotion.voice_input import listen
 
-    # Resolve system prompt: explicit arg > env var > built-in default
+    # Resolve cloud endpoint: explicit arg > env var.
+    endpoint = cloud_endpoint or _load_cloud_endpoint()
+    if not endpoint:
+        raise ValueError(
+            "EMOTION_CLOUD_ENDPOINT is not set. "
+            "Add it to .env or pass --cloud-endpoint. "
+            "Example: EMOTION_CLOUD_ENDPOINT=34.x.x.x:50051"
+        )
+
+    # Resolve system prompt: explicit arg > env var > built-in default.
     resolved_prompt = system_prompt or _load_system_prompt() or DEFAULT_SYSTEM_PROMPT
+
+    # Start cloud client — begins streaming frames in the background immediately
+    # so the 16-frame buffer has time to warm up before the first tool call.
+    cloud_client = EmotionCloudClient(mini=mini, endpoint=endpoint)
+    try:
+        cloud_client.start()
+    except Exception as exc:
+        logger.error("Failed to start EmotionCloudClient: %s", exc)
+        cloud_client.stop()
+        return
+
+    # Health check — non-fatal: log the outcome but continue either way.
+    # If the cloud is unreachable, detect_emotion will return "unclear" until
+    # the stream connects or the cloud becomes available.
+    try:
+        health = cloud_client.health_check(timeout=5.0)
+        if health.get("healthy"):
+            logger.info(
+                "emotion-cloud OK (model=%s, active_sessions=%d)",
+                health.get("model_status"),
+                health.get("active_sessions", 0),
+            )
+        else:
+            logger.warning(
+                "emotion-cloud reachable but not healthy: model_status=%s",
+                health.get("model_status"),
+            )
+    except Exception as exc:
+        logger.warning(
+            "emotion-cloud health check failed: %s — emotion detection may be unavailable", exc
+        )
 
     bridge = GeminiBridge(
         api_key=_load_api_key(),
-        mini=mini,
+        cloud_client=cloud_client,
         system_prompt=resolved_prompt,
         model=model or _load_model(),
     )
 
-    # initialize() is inside the try so shutdown() always runs in finally
     try:
         bridge.initialize()
     except Exception as exc:
         logger.error("Failed to initialise GeminiBridge: %s", exc)
         bridge.shutdown()
+        cloud_client.stop()
         return
 
     if voice_mode:
@@ -159,7 +213,7 @@ def run_conversation_loop(
     else:
         logger.info("Text mode — type your message (Ctrl-C or Ctrl-D to stop)")
 
-    # Activate speaker for the whole session (matches SDK session-level audio lifecycle)
+    # Activate speaker for the whole session.
     try:
         mini.media.start_playing()
     except Exception as exc:
@@ -222,3 +276,4 @@ def run_conversation_loop(
         except Exception:
             pass
         bridge.shutdown()
+        cloud_client.stop()

@@ -3,6 +3,7 @@
 
 Reachy listens to you via its microphone, talks with Gemini, and reads your
 emotion on-demand when Gemini decides to call the detect_emotion tool.
+Emotion inference runs on emotion-cloud (GKE) via a persistent gRPC stream.
 
 Dashboard app : ReachyEmotionApp  (registered as "reachy_emotion")
 CLI script    : reachy-emotion --help
@@ -39,13 +40,18 @@ try:
 
         def run(self, reachy_mini: "ReachyMini", stop_event: threading.Event) -> None:
             from reachy_emotion.system_deps import check_and_warn
-            from reachy_emotion.conversation_app import run_conversation_loop, _load_model
+            from reachy_emotion.conversation_app import (
+                run_conversation_loop,
+                _load_model,
+                _load_cloud_endpoint,
+            )
 
             check_and_warn()
             run_conversation_loop(
                 mini=reachy_mini,
                 stop_event=stop_event,
                 model=_load_model(),
+                cloud_endpoint=_load_cloud_endpoint(),
             )
 
 except ImportError:
@@ -89,10 +95,13 @@ def main() -> None:
                         help="Reachy media backend")
     parser.add_argument("--prompt", default=None,
                         help="Override Gemini system prompt")
+    parser.add_argument("--cloud-endpoint", default=None,
+                        dest="cloud_endpoint",
+                        help="emotion-cloud gRPC address (default: from EMOTION_CLOUD_ENDPOINT env)")
     args = parser.parse_args()
 
     from reachy_emotion.system_deps import check_and_warn
-    from reachy_emotion.conversation_app import run_conversation_loop, _load_model
+    from reachy_emotion.conversation_app import run_conversation_loop, _load_model, _load_cloud_endpoint
 
     check_and_warn()
 
@@ -114,6 +123,7 @@ def main() -> None:
             voice_mode=not args.text,
             language=args.lang,
             model=args.model or _load_model(),
+            cloud_endpoint=args.cloud_endpoint or _load_cloud_endpoint(),
         )
 
 
