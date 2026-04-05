@@ -13,8 +13,9 @@
 #   4. Writes .env on the robot with your API keys
 #   5. Restarts the Reachy daemon so the new app is picked up
 #
-# Tip: set up SSH key auth to avoid entering the robot password repeatedly:
-#   ssh-copy-id reachy@<robot-ip>
+# First-time key setup (do once after finding the robot password):
+#   ssh-keygen -t ed25519 -C "reachy-mini" -f ~/.ssh/reachy_ed25519
+#   ssh-copy-id -i ~/.ssh/reachy_ed25519.pub reachy@<robot-ip>
 
 set -euo pipefail
 
@@ -24,6 +25,7 @@ set -euo pipefail
 
 ROBOT_USER="reachy"
 ROBOT_DIR="/home/reachy/reachy-emotion"
+ROBOT_SSH_KEY="${HOME}/.ssh/reachy_ed25519"
 REPO_URL="$(git remote get-url origin 2>/dev/null || echo 'https://github.com/saurabh947/reachy-emotion.git')"
 
 # ---------------------------------------------------------------------------
@@ -34,9 +36,10 @@ ROBOT_IP=""
 OVERRIDE_ENDPOINT=""
 
 if [[ $# -eq 0 ]]; then
-  echo "Usage: $0 <robot-ip> [--user <user>] [--endpoint <host:port>]"
+  echo "Usage: $0 <robot-ip> [--user <user>] [--key <path>] [--endpoint <host:port>]"
   echo ""
   echo "  --user       SSH username on the robot (default: reachy)"
+  echo "  --key        Path to SSH private key (default: ~/.ssh/reachy_ed25519)"
   echo "  --endpoint   Override EMOTION_CLOUD_ENDPOINT (default: from local .env)"
   exit 1
 fi
@@ -48,12 +51,17 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --user)
       ROBOT_USER="$2"; shift 2 ;;
+    --key)
+      ROBOT_SSH_KEY="$2"; shift 2 ;;
     --endpoint)
       OVERRIDE_ENDPOINT="$2"; shift 2 ;;
     *)
       echo "Unknown option: $1"; exit 1 ;;
   esac
 done
+
+# Build SSH options: use the dedicated key, skip host-key prompts on first connect
+SSH_OPTS="-i ${ROBOT_SSH_KEY} -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 ROBOT="${ROBOT_USER}@${ROBOT_IP}"
 
@@ -107,6 +115,7 @@ fi
 echo ""
 echo "=== reachy-emotion deploy ==="
 echo "  Robot:              ${ROBOT}"
+echo "  SSH key:            ${ROBOT_SSH_KEY}"
 echo "  Install dir:        ${ROBOT_DIR}"
 echo "  Repo:               ${REPO_URL}"
 echo "  GEMINI_API_KEY:     ${GEMINI_API_KEY:0:8}…  (truncated)"
@@ -119,7 +128,7 @@ echo ""
 
 echo "→ Connecting to robot and syncing code …"
 
-ssh "${ROBOT}" bash <<REMOTE
+ssh ${SSH_OPTS} "${ROBOT}" bash <<REMOTE
 set -euo pipefail
 
 REPO_URL="${REPO_URL}"
@@ -145,7 +154,7 @@ echo "  ✓ Code synced."
 
 echo "→ Writing .env on robot …"
 
-ssh "${ROBOT}" bash <<REMOTE
+ssh ${SSH_OPTS} "${ROBOT}" bash <<REMOTE
 set -euo pipefail
 
 cat > "${ROBOT_DIR}/.env" <<'ENV'
@@ -169,7 +178,7 @@ REMOTE
 
 echo "→ Running install.sh on robot …"
 
-ssh "${ROBOT}" bash <<REMOTE
+ssh ${SSH_OPTS} "${ROBOT}" bash <<REMOTE
 set -euo pipefail
 cd "${ROBOT_DIR}"
 chmod +x install.sh
@@ -186,7 +195,7 @@ echo "  ✓ Install complete."
 
 echo "→ Restarting Reachy daemon …"
 
-ssh "${ROBOT}" bash <<REMOTE
+ssh ${SSH_OPTS} "${ROBOT}" bash <<REMOTE
 set -euo pipefail
 
 # Try systemd first (common on robot), fall back to a process signal.
@@ -209,7 +218,7 @@ REMOTE
 
 echo "→ Verifying installation …"
 
-ssh "${ROBOT}" bash <<REMOTE
+ssh ${SSH_OPTS} "${ROBOT}" bash <<REMOTE
 set -euo pipefail
 cd "${ROBOT_DIR}"
 
@@ -231,7 +240,7 @@ echo ""
 echo "✅ reachy-emotion deployed to ${ROBOT_IP}"
 echo ""
 echo "  To run the app on the robot:"
-echo "    ssh ${ROBOT}"
+echo "    ssh -i ${ROBOT_SSH_KEY} ${ROBOT}"
 echo "    reachy-emotion"
 echo ""
 echo "  Or open the dashboard:  http://${ROBOT_IP}:8000"

@@ -263,13 +263,7 @@ class GeminiBridge:
         if self._cloud_client is None:
             return {"error": "EmotionCloudClient not available"}
 
-        result = self._cloud_client.get_latest_result()
-        if result is None:
-            return {
-                "dominant_emotion": "unclear",
-                "confidence": 0.0,
-                "note": "emotion-cloud buffer still warming up — no result yet",
-            }
-
-        self._last_emotion_result = result
+        result = self._cloud_client.detect_emotion()
+        if result.get("dominant_emotion") != "unclear":
+            self._last_emotion_result = result
         return result

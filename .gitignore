@@ -19,6 +19,7 @@ build/
 venv/
 env/
 reachy_mini_env/
+reachy-emotion-env/
 
 # IDE
 .cursor/
@@ -42,3 +43,4 @@ htmlcov/
 # Generated gRPC stubs (auto-generated from proto/emotion.proto at runtime)
 src/reachy_emotion/proto/emotion_pb2.py
 src/reachy_emotion/proto/emotion_pb2_grpc.py
+.gstack/

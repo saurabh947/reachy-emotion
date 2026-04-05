@@ -41,10 +41,17 @@ def _fn_call(name: str) -> MagicMock:
 # Helpers
 # ---------------------------------------------------------------------------
 
+_UNCLEAR_RESULT = {
+    "dominant_emotion": "unclear",
+    "confidence": 0.0,
+    "note": "No result from emotion-cloud within timeout",
+}
+
+
 def _make_cloud_client(result=None) -> MagicMock:
-    """Return a mock EmotionCloudClient with a pre-configured get_latest_result."""
+    """Return a mock EmotionCloudClient with a pre-configured detect_emotion return value."""
     client = MagicMock()
-    client.get_latest_result.return_value = result
+    client.detect_emotion.return_value = result if result is not None else _UNCLEAR_RESULT
     return client
 
 
@@ -148,13 +155,15 @@ def test_run_emotion_detection_returns_error_when_no_client():
     assert "error" in result
 
 
-def test_run_emotion_detection_returns_unclear_when_buffer_warming():
-    """get_latest_result() returning None means buffer still warming up."""
+def test_run_emotion_detection_returns_unclear_when_no_result():
+    """detect_emotion() returning unclear is passed through as-is."""
     bridge = _make_bridge(cloud_client=_make_cloud_client(result=None))
     result = bridge._run_emotion_detection()
     assert result["dominant_emotion"] == "unclear"
     assert result["confidence"] == 0.0
     assert "note" in result
+    # unclear result must NOT be stored as last_emotion_result
+    assert bridge._last_emotion_result is None
 
 
 def test_run_emotion_detection_returns_cloud_result():

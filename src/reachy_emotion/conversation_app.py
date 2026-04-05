@@ -149,48 +149,23 @@ def run_conversation_loop(
     from reachy_emotion.tts_announcer import speak_text
     from reachy_emotion.voice_input import listen
 
-    # Resolve cloud endpoint: explicit arg > env var.
+    # Resolve cloud endpoint: explicit arg > env var > None (emotion detection disabled).
     endpoint = cloud_endpoint or _load_cloud_endpoint()
-    if not endpoint:
-        raise ValueError(
-            "EMOTION_CLOUD_ENDPOINT is not set. "
-            "Add it to .env or pass --cloud-endpoint. "
-            "Example: EMOTION_CLOUD_ENDPOINT=34.x.x.x:50051"
-        )
 
     # Resolve system prompt: explicit arg > env var > built-in default.
     resolved_prompt = system_prompt or _load_system_prompt() or DEFAULT_SYSTEM_PROMPT
 
-    # Start cloud client — begins streaming frames in the background immediately
-    # so the 16-frame buffer has time to warm up before the first tool call.
-    cloud_client = EmotionCloudClient(mini=mini, endpoint=endpoint)
-    try:
-        cloud_client.start()
-    except Exception as exc:
-        logger.error("Failed to start EmotionCloudClient: %s", exc)
-        cloud_client.stop()
-        return
-
-    # Health check — non-fatal: log the outcome but continue either way.
-    # If the cloud is unreachable, detect_emotion will return "unclear" until
-    # the stream connects or the cloud becomes available.
-    try:
-        health = cloud_client.health_check(timeout=5.0)
-        if health.get("healthy"):
-            logger.info(
-                "emotion-cloud OK (model=%s, active_sessions=%d)",
-                health.get("model_status"),
-                health.get("active_sessions", 0),
-            )
-        else:
-            logger.warning(
-                "emotion-cloud reachable but not healthy: model_status=%s",
-                health.get("model_status"),
-            )
-    except Exception as exc:
-        logger.warning(
-            "emotion-cloud health check failed: %s — emotion detection may be unavailable", exc
-        )
+    # Set up emotion cloud client if an endpoint is configured.
+    cloud_client = None
+    if endpoint:
+        cloud_client = EmotionCloudClient(mini=mini, endpoint=endpoint)
+        try:
+            cloud_client.start()
+        except Exception as exc:
+            logger.warning("EmotionCloudClient setup failed: %s — emotion detection disabled", exc)
+            cloud_client = None
+    else:
+        logger.info("No EMOTION_CLOUD_ENDPOINT set — emotion detection disabled")
 
     bridge = GeminiBridge(
         api_key=_load_api_key(),
@@ -204,7 +179,8 @@ def run_conversation_loop(
     except Exception as exc:
         logger.error("Failed to initialise GeminiBridge: %s", exc)
         bridge.shutdown()
-        cloud_client.stop()
+        if cloud_client is not None:
+            cloud_client.stop()
         return
 
     if voice_mode:
@@ -276,4 +252,5 @@ def run_conversation_loop(
         except Exception:
             pass
         bridge.shutdown()
-        cloud_client.stop()
+        if cloud_client is not None:
+            cloud_client.stop()
